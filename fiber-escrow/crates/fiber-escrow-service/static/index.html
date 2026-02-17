@@ -4,9 +4,700 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fiber Escrow Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+        h1 {
+            font-size: 1.5rem;
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .user-selector {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .user-selector label {
+            font-size: 0.9rem;
+            color: #888;
+        }
+        select {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid #3a7bd5;
+            background: #1a1a2e;
+            color: #fff;
+            cursor: pointer;
+        }
+        .balance {
+            padding: 8px 16px;
+            background: rgba(0,210,255,0.1);
+            border-radius: 8px;
+            font-weight: bold;
+            color: #00d2ff;
+        }
+        .tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 12px 24px;
+            background: rgba(255,255,255,0.05);
+            border: none;
+            border-radius: 8px 8px 0 0;
+            color: #888;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .tab:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        .tab.active {
+            background: rgba(58,123,213,0.3);
+            color: #fff;
+        }
+        .tab-content {
+            display: none;
+            background: rgba(255,255,255,0.03);
+            border-radius: 0 12px 12px 12px;
+            padding: 20px;
+            min-height: 400px;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .card {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+        .card-subtitle {
+            font-size: 0.85rem;
+            color: #888;
+        }
+        .price {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #00d2ff;
+        }
+        .status {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        .status.waiting_payment { background: #f39c12; color: #000; }
+        .status.funded { background: #3498db; color: #fff; }
+        .status.shipped { background: #9b59b6; color: #fff; }
+        .status.completed { background: #2ecc71; color: #000; }
+        .status.disputed { background: #e74c3c; color: #fff; }
+        .status.refunded { background: #95a5a6; color: #000; }
+        .btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            color: #fff;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,210,255,0.3);
+        }
+        .btn-secondary {
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+        }
+        .btn-danger {
+            background: #e74c3c;
+            color: #fff;
+        }
+        .btn-success {
+            background: #2ecc71;
+            color: #000;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .form-group {
+            margin-bottom: 16px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 0.9rem;
+            color: #888;
+        }
+        .form-group input, .form-group textarea {
+            width: 100%;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            background: rgba(255,255,255,0.05);
+            color: #fff;
+        }
+        .form-group textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        .actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+        .modal.active {
+            display: flex;
+        }
+        .modal-content {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 24px;
+            max-width: 400px;
+            width: 90%;
+        }
+        .modal-header {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+        .role-badge {
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin-left: 8px;
+        }
+        .role-buyer { background: #3498db; }
+        .role-seller { background: #9b59b6; }
+        .system-controls {
+            margin-top: 20px;
+            padding: 16px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+        }
+        .system-controls h3 {
+            font-size: 0.9rem;
+            color: #888;
+            margin-bottom: 12px;
+        }
+        .tick-controls {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 12px 24px;
+            background: #2ecc71;
+            color: #000;
+            border-radius: 8px;
+            font-weight: 600;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s;
+            z-index: 200;
+        }
+        .toast.active {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .toast.error {
+            background: #e74c3c;
+            color: #fff;
+        }
+    </style>
 </head>
 <body>
-    <h1>Fiber Escrow Demo</h1>
-    <p>Coming soon...</p>
+    <div class="container">
+        <header>
+            <h1>Fiber Escrow Demo</h1>
+            <div class="user-selector">
+                <label>Acting as:</label>
+                <select id="userSelect" onchange="switchUser()">
+                    <option value="">Loading...</option>
+                </select>
+                <div class="balance" id="balance">0 sats</div>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('market')">Market</button>
+            <button class="tab" onclick="showTab('orders')">My Orders</button>
+            <button class="tab" onclick="showTab('products')">My Products</button>
+            <button class="tab" onclick="showTab('arbiter')">Arbiter</button>
+        </div>
+
+        <!-- Market Tab -->
+        <div id="market" class="tab-content active">
+            <div id="productList"></div>
+        </div>
+
+        <!-- My Orders Tab -->
+        <div id="orders" class="tab-content">
+            <div id="orderList"></div>
+        </div>
+
+        <!-- My Products Tab -->
+        <div id="products" class="tab-content">
+            <div class="card">
+                <h3 style="margin-bottom: 16px;">Create New Product</h3>
+                <div class="form-group">
+                    <label>Title</label>
+                    <input type="text" id="newProductTitle" placeholder="Product title">
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <textarea id="newProductDesc" placeholder="Product description"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Price (sats)</label>
+                    <input type="number" id="newProductPrice" placeholder="1000" value="1000">
+                </div>
+                <button class="btn btn-primary" onclick="createProduct()">Create Product</button>
+            </div>
+            <h3 style="margin: 20px 0 12px;">Your Products</h3>
+            <div id="myProductList"></div>
+        </div>
+
+        <!-- Arbiter Tab -->
+        <div id="arbiter" class="tab-content">
+            <h3 style="margin-bottom: 16px;">Disputed Orders</h3>
+            <div id="disputeList"></div>
+            
+            <div class="system-controls">
+                <h3>Time Simulation (for testing auto-confirm)</h3>
+                <div class="tick-controls">
+                    <button class="btn btn-secondary" onclick="advanceTime(3600)">+1 hour</button>
+                    <button class="btn btn-secondary" onclick="advanceTime(86400)">+1 day</button>
+                    <button class="btn btn-secondary" onclick="advanceTime(86400 * 7)">+1 week</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Dispute Modal -->
+    <div id="disputeModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">File Dispute</div>
+            <div class="form-group">
+                <label>Reason for dispute</label>
+                <textarea id="disputeReason" placeholder="Describe the issue..."></textarea>
+            </div>
+            <div class="actions">
+                <button class="btn btn-danger" onclick="submitDispute()">Submit Dispute</button>
+                <button class="btn btn-secondary" onclick="closeDisputeModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast"></div>
+
+    <script>
+        let currentUserId = null;
+        let users = [];
+        let disputeOrderId = null;
+
+        // API helpers
+        async function api(method, path, body = null) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (currentUserId) {
+                headers['X-User-Id'] = currentUserId;
+            }
+            const options = { method, headers };
+            if (body) {
+                options.body = JSON.stringify(body);
+            }
+            const res = await fetch('/api' + path, options);
+            return res.json();
+        }
+
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast active' + (isError ? ' error' : '');
+            setTimeout(() => toast.className = 'toast', 3000);
+        }
+
+        // Tab navigation
+        function showTab(tabId) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelector(`.tab-content#${tabId}`).classList.add('active');
+            document.querySelectorAll('.tab')[['market', 'orders', 'products', 'arbiter'].indexOf(tabId)].classList.add('active');
+            refresh();
+        }
+
+        // User management
+        async function loadUsers() {
+            const data = await api('GET', '/users');
+            users = data.users || [];
+            const select = document.getElementById('userSelect');
+            select.innerHTML = users.map(u => 
+                `<option value="${u.id}">${u.username}</option>`
+            ).join('');
+            if (users.length > 0) {
+                currentUserId = users[0].id;
+                updateBalance();
+            }
+        }
+
+        async function switchUser() {
+            currentUserId = document.getElementById('userSelect').value;
+            await updateBalance();
+            refresh();
+        }
+
+        async function updateBalance() {
+            if (!currentUserId) return;
+            const data = await api('GET', '/user/me');
+            if (data.balance_sat !== undefined) {
+                document.getElementById('balance').textContent = `${data.balance_sat.toLocaleString()} sats`;
+            }
+        }
+
+        // Products
+        async function loadProducts() {
+            const data = await api('GET', '/products');
+            const list = document.getElementById('productList');
+            const products = data.products || [];
+            
+            if (products.length === 0) {
+                list.innerHTML = '<div class="empty-state">No products available. Create one in "My Products" tab!</div>';
+                return;
+            }
+
+            list.innerHTML = products.map(p => `
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">${escapeHtml(p.title)}</div>
+                            <div class="card-subtitle">by ${escapeHtml(p.seller_username || 'Unknown')}</div>
+                        </div>
+                        <div class="price">${p.price_sat.toLocaleString()} sats</div>
+                    </div>
+                    <p style="color: #aaa; font-size: 0.9rem;">${escapeHtml(p.description)}</p>
+                    <div class="actions">
+                        <button class="btn btn-primary" onclick="buyProduct('${p.id}')" 
+                            ${p.seller_id === currentUserId ? 'disabled title="Your own product"' : ''}>
+                            Buy Now
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function loadMyProducts() {
+            const data = await api('GET', '/products/mine');
+            const list = document.getElementById('myProductList');
+            const products = data.products || [];
+            
+            if (products.length === 0) {
+                list.innerHTML = '<div class="empty-state">You haven\'t created any products yet.</div>';
+                return;
+            }
+
+            list.innerHTML = products.map(p => `
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">${escapeHtml(p.title)}</div>
+                            <div class="card-subtitle">${p.status}</div>
+                        </div>
+                        <div class="price">${p.price_sat.toLocaleString()} sats</div>
+                    </div>
+                    <p style="color: #aaa; font-size: 0.9rem;">${escapeHtml(p.description)}</p>
+                </div>
+            `).join('');
+        }
+
+        async function createProduct() {
+            const title = document.getElementById('newProductTitle').value.trim();
+            const description = document.getElementById('newProductDesc').value.trim();
+            const price_sat = parseInt(document.getElementById('newProductPrice').value) || 0;
+
+            if (!title || !description || price_sat <= 0) {
+                showToast('Please fill all fields', true);
+                return;
+            }
+
+            const data = await api('POST', '/products', { title, description, price_sat });
+            if (data.product_id) {
+                showToast('Product created!');
+                document.getElementById('newProductTitle').value = '';
+                document.getElementById('newProductDesc').value = '';
+                document.getElementById('newProductPrice').value = '1000';
+                loadMyProducts();
+            } else {
+                showToast(data.error || 'Failed to create product', true);
+            }
+        }
+
+        async function buyProduct(productId) {
+            const data = await api('POST', '/orders', { product_id: productId });
+            if (data.order_id) {
+                showToast('Order created! Go to My Orders to pay.');
+                refresh();
+            } else {
+                showToast(data.error || 'Failed to create order', true);
+            }
+        }
+
+        // Orders
+        async function loadOrders() {
+            const data = await api('GET', '/orders/mine');
+            const list = document.getElementById('orderList');
+            const orders = data.orders || [];
+            
+            if (orders.length === 0) {
+                list.innerHTML = '<div class="empty-state">No orders yet. Browse the Market to buy something!</div>';
+                return;
+            }
+
+            list.innerHTML = orders.map(o => {
+                const isBuyer = o.buyer_id === currentUserId;
+                const isSeller = o.seller_id === currentUserId;
+                return `
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">
+                                ${escapeHtml(o.product_title)}
+                                <span class="role-badge ${isBuyer ? 'role-buyer' : 'role-seller'}">
+                                    ${isBuyer ? 'Buyer' : 'Seller'}
+                                </span>
+                            </div>
+                            <div class="card-subtitle">Order #${o.id.slice(0, 8)}</div>
+                        </div>
+                        <div>
+                            <span class="status ${o.status}">${formatStatus(o.status)}</span>
+                            <div class="price" style="margin-top: 4px;">${o.amount_sat.toLocaleString()} sats</div>
+                        </div>
+                    </div>
+                    ${o.dispute ? `<p style="color: #e74c3c; font-size: 0.9rem;">Dispute: ${escapeHtml(o.dispute.reason)}</p>` : ''}
+                    <div class="actions">
+                        ${getOrderActions(o, isBuyer, isSeller)}
+                    </div>
+                </div>
+            `}).join('');
+        }
+
+        function formatStatus(status) {
+            return status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function getOrderActions(order, isBuyer, isSeller) {
+            const actions = [];
+            
+            if (isBuyer && order.status === 'waiting_payment') {
+                actions.push(`<button class="btn btn-primary" onclick="payOrder('${order.id}')">Pay Now</button>`);
+            }
+            if (isSeller && order.status === 'funded') {
+                actions.push(`<button class="btn btn-primary" onclick="shipOrder('${order.id}')">Mark Shipped</button>`);
+            }
+            if (isBuyer && order.status === 'shipped') {
+                actions.push(`<button class="btn btn-success" onclick="confirmOrder('${order.id}')">Confirm Receipt</button>`);
+                actions.push(`<button class="btn btn-danger" onclick="openDisputeModal('${order.id}')">Dispute</button>`);
+            }
+            if (isBuyer && order.status === 'funded') {
+                actions.push(`<button class="btn btn-danger" onclick="openDisputeModal('${order.id}')">Dispute</button>`);
+            }
+            
+            return actions.join('');
+        }
+
+        async function payOrder(orderId) {
+            const data = await api('POST', `/orders/${orderId}/pay`);
+            if (data.status === 'funded') {
+                showToast('Payment successful! Waiting for seller to ship.');
+                refresh();
+            } else {
+                showToast(data.error || 'Payment failed', true);
+            }
+        }
+
+        async function shipOrder(orderId) {
+            const data = await api('POST', `/orders/${orderId}/ship`);
+            if (data.status === 'shipped') {
+                showToast('Marked as shipped! Waiting for buyer confirmation.');
+                refresh();
+            } else {
+                showToast(data.error || 'Failed to ship', true);
+            }
+        }
+
+        async function confirmOrder(orderId) {
+            const data = await api('POST', `/orders/${orderId}/confirm`);
+            if (data.status === 'completed') {
+                showToast('Order completed! Funds released to seller.');
+                refresh();
+            } else {
+                showToast(data.error || 'Failed to confirm', true);
+            }
+        }
+
+        // Disputes
+        function openDisputeModal(orderId) {
+            disputeOrderId = orderId;
+            document.getElementById('disputeModal').classList.add('active');
+        }
+
+        function closeDisputeModal() {
+            disputeOrderId = null;
+            document.getElementById('disputeReason').value = '';
+            document.getElementById('disputeModal').classList.remove('active');
+        }
+
+        async function submitDispute() {
+            const reason = document.getElementById('disputeReason').value.trim();
+            if (!reason) {
+                showToast('Please provide a reason', true);
+                return;
+            }
+            const data = await api('POST', `/orders/${disputeOrderId}/dispute`, { reason });
+            if (data.status === 'disputed') {
+                showToast('Dispute filed successfully');
+                closeDisputeModal();
+                refresh();
+            } else {
+                showToast(data.error || 'Failed to file dispute', true);
+            }
+        }
+
+        async function loadDisputes() {
+            const data = await api('GET', '/arbiter/disputes');
+            const list = document.getElementById('disputeList');
+            const disputes = data.disputes || [];
+            
+            if (disputes.length === 0) {
+                list.innerHTML = '<div class="empty-state">No disputes to resolve.</div>';
+                return;
+            }
+
+            list.innerHTML = disputes.map(o => `
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">${escapeHtml(o.product_title)}</div>
+                            <div class="card-subtitle">Order #${o.id.slice(0, 8)}</div>
+                        </div>
+                        <div class="price">${o.amount_sat.toLocaleString()} sats</div>
+                    </div>
+                    <p style="color: #e74c3c; margin: 8px 0; font-size: 0.9rem;">
+                        <strong>Dispute reason:</strong> ${escapeHtml(o.dispute?.reason || 'N/A')}
+                    </p>
+                    <div class="actions">
+                        <button class="btn btn-success" onclick="resolveDispute('${o.id}', 'seller')">
+                            Release to Seller
+                        </button>
+                        <button class="btn btn-danger" onclick="resolveDispute('${o.id}', 'buyer')">
+                            Refund Buyer
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function resolveDispute(orderId, resolution) {
+            const data = await api('POST', `/arbiter/disputes/${orderId}/resolve`, { resolution });
+            if (data.status === 'resolved') {
+                showToast(`Dispute resolved in favor of ${resolution}`);
+                refresh();
+            } else {
+                showToast(data.error || 'Failed to resolve', true);
+            }
+        }
+
+        // Time simulation
+        async function advanceTime(seconds) {
+            const data = await api('POST', '/system/tick', { seconds });
+            const expired = data.expired_orders || [];
+            if (expired.length > 0) {
+                showToast(`${expired.length} order(s) auto-confirmed!`);
+            } else {
+                showToast(`Time advanced by ${seconds} seconds`);
+            }
+            refresh();
+        }
+
+        // Utilities
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function refresh() {
+            updateBalance();
+            const activeTab = document.querySelector('.tab-content.active').id;
+            if (activeTab === 'market') loadProducts();
+            else if (activeTab === 'orders') loadOrders();
+            else if (activeTab === 'products') loadMyProducts();
+            else if (activeTab === 'arbiter') loadDisputes();
+        }
+
+        // Initialize
+        loadUsers().then(() => refresh());
+    </script>
 </body>
 </html>

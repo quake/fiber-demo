@@ -244,6 +244,7 @@ dependencies = [
  "axum",
  "chrono",
  "fiber-core",
+ "hex",
  "serde",
  "serde_json",
  "tokio",
