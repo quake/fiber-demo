@@ -34,19 +34,43 @@ cd fiber-game && cargo test -p fiber-game-core
 
 # Tests with output
 cargo test -- --nocapture
+
+# End-to-end HTTP service tests (starts real services)
+cd fiber-game && cargo test --test e2e_game_flow -- --nocapture --test-threads=1
 ```
 
 ### Run Services
+
+**Note:** Services with Web UI must be started from their crate directory for static files to load correctly. Both Oracle and Player support the `PORT` environment variable.
+
 ```bash
 # Escrow demo (http://localhost:3000)
-cd fiber-escrow && cargo run
+cd fiber-escrow/crates/fiber-escrow-service && cargo run
 
-# Game demo - Oracle (http://localhost:3001)
-cd fiber-game && cargo run -p fiber-game-oracle
+# Game demo - Oracle (http://localhost:3000)
+# Note: Conflicts with Escrow, run one at a time
+cd fiber-game/crates/fiber-game-oracle && cargo run -p fiber-game-oracle
 
-# Game demo - Player (http://localhost:3002)
-cd fiber-game && cargo run -p fiber-game-player
+# Game demo - Player (http://localhost:3001)
+cd fiber-game/crates/fiber-game-player && cargo run -p fiber-game-player
 ```
+
+### Two-Player Local Testing
+
+To test the game with two players locally, start three terminals:
+
+```bash
+# Terminal 1 - Oracle (must start first)
+cd fiber-game/crates/fiber-game-oracle && cargo run
+
+# Terminal 2 - Player A (http://localhost:3001)
+cd fiber-game/crates/fiber-game-player && cargo run
+
+# Terminal 3 - Player B (http://localhost:3002)
+cd fiber-game/crates/fiber-game-player && PORT=3002 ORACLE_URL=http://localhost:3000 cargo run
+```
+
+Then open browsers to http://localhost:3001 (Player A) and http://localhost:3002 (Player B).
 
 ### Linting
 ```bash
