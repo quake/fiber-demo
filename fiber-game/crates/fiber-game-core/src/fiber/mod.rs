@@ -1,7 +1,7 @@
-//! Fiber client trait and mock implementation.
+//! Fiber Network client abstraction.
+//!
+//! Re-exports from fiber-core for backward compatibility.
 
-mod mock;
-mod traits;
-
-pub use mock::MockFiberClient;
-pub use traits::{FiberClient, FiberError, HoldInvoice, PaymentId, PaymentStatus};
+pub use fiber_core::{
+    FiberClient, FiberError, HoldInvoice, MockFiberClient, PaymentId, PaymentStatus,
+};

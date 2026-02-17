@@ -7,6 +7,7 @@ authors.workspace = true
 description = "Core library for Fiber Game protocol: crypto, games, and protocol logic"
 
 [dependencies]
+fiber-core = { workspace = true }
 secp256k1 = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }
