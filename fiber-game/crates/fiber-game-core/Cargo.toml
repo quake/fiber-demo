@@ -1,0 +1,21 @@
+[package]
+name = "fiber-game-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core library for Fiber Game protocol: crypto, games, and protocol logic"
+
+[dependencies]
+secp256k1 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
