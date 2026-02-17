@@ -166,6 +166,18 @@
         .result.draw {
             color: #ffaa00;
         }
+        .loading-spinner {
+            width: 30px;
+            height: 30px;
+            border: 3px solid rgba(255,255,255,0.2);
+            border-top-color: #00d9ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 15px auto;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
         .hidden {
             display: none;
         }
@@ -393,15 +405,85 @@
         }
 
         // Open game modal
-        function openGame(gameId, gameType, phase) {
+        async function openGame(gameId, gameType, phase) {
             const modal = document.getElementById('gameModal');
             const title = document.getElementById('modalTitle');
             const content = document.getElementById('modalContent');
 
             title.textContent = formatGameType(gameType);
+            
+            // Start with loading state
+            content.innerHTML = '<div class="status">Loading...</div>';
+            modal.classList.remove('hidden');
 
-            if (phase === 'WaitingForAction') {
-                if (gameType === 'RockPaperScissors') {
+            // Fetch current game status
+            try {
+                const resp = await fetch(`${API_BASE}/api/game/${gameId}/status`);
+                const status = await resp.json();
+                
+                // Store for polling
+                currentGameId = gameId;
+                currentGameType = gameType;
+                
+                renderGameModal(gameId, gameType, status);
+                
+                // Start polling if game is in progress
+                if (status.phase !== 'Settled' && status.phase !== 'WaitingForAction') {
+                    startGamePolling(gameId, gameType);
+                }
+            } catch (e) {
+                console.error('Error fetching game status:', e);
+                content.innerHTML = `
+                    <div class="status">
+                        <p>Error loading game status</p>
+                        <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                    </div>
+                `;
+            }
+        }
+
+        let currentGameId = null;
+        let currentGameType = null;
+        let gamePollingInterval = null;
+
+        function startGamePolling(gameId, gameType) {
+            stopGamePolling();
+            gamePollingInterval = setInterval(async () => {
+                try {
+                    const resp = await fetch(`${API_BASE}/api/game/${gameId}/status`);
+                    const status = await resp.json();
+                    renderGameModal(gameId, gameType, status);
+                    
+                    // Stop polling if game is settled
+                    if (status.phase === 'Settled') {
+                        stopGamePolling();
+                    }
+                } catch (e) {
+                    console.error('Error polling game status:', e);
+                }
+            }, 2000);
+        }
+
+        function stopGamePolling() {
+            if (gamePollingInterval) {
+                clearInterval(gamePollingInterval);
+                gamePollingInterval = null;
+            }
+        }
+
+        function renderGameModal(gameId, gameType, status) {
+            const content = document.getElementById('modalContent');
+            
+            // If waiting for action, show game interface
+            if (status.phase === 'WaitingForAction' || status.phase === 'ExchangingInvoices' || status.phase === 'WaitingForOpponent') {
+                if (status.phase === 'WaitingForOpponent') {
+                    content.innerHTML = `
+                        <div class="status">
+                            <p>Waiting for opponent to join...</p>
+                            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+                        </div>
+                    `;
+                } else if (gameType === 'RockPaperScissors') {
                     content.innerHTML = `
                         <div class="rps-buttons">
                             <div class="rps-btn" onclick="selectRps(this, 'Rock')">🪨</div>
@@ -425,19 +507,96 @@
                         </div>
                     `;
                 }
-            } else {
+                return;
+            }
+            
+            // If result is available, show result
+            if (status.result) {
+                const myAction = formatAction(status.my_action);
+                const oppAction = formatAction(status.opponent_action);
+                const resultText = getResultText(status.result);
+                const resultClass = getResultClass(status.result);
+                
+                let settleButton = '';
+                if (status.can_settle) {
+                    settleButton = `<button class="btn" onclick="settleGame('${gameId}')">Settle Now</button>`;
+                } else if (status.phase === 'Settled') {
+                    settleButton = '<p style="color: #00ff88;">Settlement Complete</p>';
+                }
+                
                 content.innerHTML = `
-                    <div class="status">
-                        <p>Phase: ${formatPhase(phase)}</p>
+                    <div class="result ${resultClass}">
+                        <h3>${resultText}</h3>
+                        <p style="margin: 15px 0; color: #ccc;">
+                            You: <strong>${myAction}</strong> vs Opponent: <strong>${oppAction}</strong>
+                        </p>
+                        ${settleButton}
                         <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                     </div>
                 `;
+                return;
             }
+            
+            // Otherwise show waiting state
+            content.innerHTML = `
+                <div class="status">
+                    <p>Phase: ${formatPhase(status.phase)}</p>
+                    ${status.my_action ? `<p>Your move: ${formatAction(status.my_action)}</p>` : ''}
+                    <p style="margin-top: 15px;">Waiting for opponent...</p>
+                    <div class="loading-spinner"></div>
+                    <button class="btn btn-secondary" style="margin-top: 15px;" onclick="closeModal()">Close</button>
+                </div>
+            `;
+        }
 
-            modal.classList.remove('hidden');
+        function formatAction(action) {
+            if (!action) return '?';
+            if (action.Rps) return action.Rps;
+            if (typeof action.GuessNumber === 'number') return action.GuessNumber.toString();
+            return JSON.stringify(action);
+        }
+
+        function getResultText(result) {
+            if (result === 'AWins') return 'Player A Wins!';
+            if (result === 'BWins') return 'Player B Wins!';
+            if (result === 'Draw') return "It's a Draw!";
+            return result;
+        }
+
+        function getResultClass(result) {
+            // We don't know our role here, so just use neutral styling
+            // In a full implementation, we'd pass the role
+            if (result === 'Draw') return 'draw';
+            return '';
+        }
+
+        async function settleGame(gameId) {
+            try {
+                const resp = await fetch(`${API_BASE}/api/game/${gameId}/settle`, {
+                    method: 'POST'
+                });
+                const data = await resp.json();
+                
+                let message = '';
+                if (data.amount_won > 0) {
+                    message = `You won ${data.amount_won} sats!`;
+                } else if (data.amount_won < 0) {
+                    message = `You lost ${Math.abs(data.amount_won)} sats.`;
+                } else {
+                    message = "It's a draw. No sats won or lost.";
+                }
+                
+                alert(message);
+                closeModal();
+                refreshAll();
+            } catch (e) {
+                console.error('Error settling game:', e);
+                alert('Error settling game');
+            }
         }
 
         function closeModal() {
+            stopGamePolling();
             document.getElementById('gameModal').classList.add('hidden');
         }
 
