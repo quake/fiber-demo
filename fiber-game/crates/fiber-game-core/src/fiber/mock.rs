@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 /// State of a mock invoice
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct MockInvoiceState {
     payment_hash: PaymentHash,
     amount_sat: u64,

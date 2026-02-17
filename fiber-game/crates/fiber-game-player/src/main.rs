@@ -10,11 +10,9 @@ use axum::{
     Json, Router,
 };
 use fiber_game_core::{
-    crypto::{
-        compute_signature_points, Commitment, EncryptedPreimage, PaymentHash, Preimage, Salt,
-    },
-    fiber::{FiberClient, MockFiberClient},
-    games::{GameAction, GameType, RpsAction},
+    crypto::{Commitment, EncryptedPreimage, PaymentHash, Preimage, Salt},
+    fiber::MockFiberClient,
+    games::{GameAction, GameType},
     protocol::{GameId, GameResult, Player},
 };
 use reqwest::Client;
@@ -60,6 +58,7 @@ struct PlayerState {
 
 /// State of a game from player's perspective
 #[derive(Clone)]
+#[allow(dead_code)]
 struct PlayerGameState {
     role: Player,
     game_type: GameType,

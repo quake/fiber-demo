@@ -6,19 +6,11 @@
 
 use super::{Preimage, SignaturePoint};
 use serde::{Deserialize, Serialize};
-use serde::{Deserializer, Serializer};
 use std::fmt;
-use thiserror::Error;
 
 /// Encrypted preimage = preimage XOR H(sig_point)
 #[derive(Clone, Serialize, Deserialize)]
 pub struct EncryptedPreimage([u8; 32]);
-
-#[derive(Debug, Error)]
-pub enum DecryptError {
-    #[error("Invalid preimage: hash does not match expected payment hash")]
-    InvalidPreimage,
-}
 
 impl EncryptedPreimage {
     /// Encrypt preimage with signature point
@@ -62,6 +54,7 @@ impl fmt::Debug for EncryptedPreimage {
 
 /// Oracle's signature on game result
 /// This can be used to derive the signature point for decryption
+#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OracleSignature {
     /// The actual signature bytes (Schnorr signature) as hex string
@@ -71,6 +64,7 @@ pub struct OracleSignature {
     pub message: Vec<u8>,
 }
 
+#[allow(dead_code)]
 mod signature_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -90,6 +84,7 @@ mod signature_serde {
     }
 }
 
+#[allow(dead_code)]
 impl OracleSignature {
     /// Extract the signature point from the Oracle's signature
     /// For a Schnorr signature (R, s), the signature point we computed was:

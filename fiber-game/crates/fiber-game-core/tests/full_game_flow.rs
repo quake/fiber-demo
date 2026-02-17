@@ -3,12 +3,10 @@
 //! These tests simulate complete game sessions from start to finish.
 
 use fiber_game_core::{
-    crypto::{
-        compute_signature_points, Commitment, EncryptedPreimage, PaymentHash, Preimage, Salt,
-    },
+    crypto::{compute_signature_points, Commitment, EncryptedPreimage, Preimage, Salt},
     fiber::{FiberClient, MockFiberClient},
-    games::{GameAction, GameJudge, GameType, GuessNumberGame, OracleSecret, RpsAction, RpsGame},
-    protocol::{GameId, GameResult, Player},
+    games::{GameAction, GameJudge, GuessNumberGame, OracleSecret, RpsAction, RpsGame},
+    protocol::{GameId, GameResult},
 };
 
 /// Simulate a complete Rock-Paper-Scissors game where A wins
@@ -59,7 +57,7 @@ async fn test_full_rps_game_a_wins() {
 
     // A encrypts their preimage with B_wins point (so B can claim if B wins)
     // B encrypts their preimage with A_wins point (so A can claim if A wins)
-    let encrypted_preimage_a = EncryptedPreimage::encrypt(&preimage_a, &sig_points.b_wins);
+    let _encrypted_preimage_a = EncryptedPreimage::encrypt(&preimage_a, &sig_points.b_wins);
     let encrypted_preimage_b = EncryptedPreimage::encrypt(&preimage_b, &sig_points.a_wins);
 
     // Exchange encrypted preimages (via Oracle)
@@ -101,11 +99,11 @@ async fn test_full_rps_game_a_wins() {
 #[tokio::test]
 async fn test_full_rps_game_draw() {
     let secp = secp256k1::Secp256k1::new();
-    let oracle_sk = secp256k1::SecretKey::new(&mut rand::thread_rng());
-    let oracle_pk = secp256k1::PublicKey::from_secret_key(&secp, &oracle_sk);
-    let commitment_sk = secp256k1::SecretKey::new(&mut rand::thread_rng());
-    let commitment_point = secp256k1::PublicKey::from_secret_key(&secp, &commitment_sk);
-    let game_id = GameId::new();
+    let _oracle_sk = secp256k1::SecretKey::new(&mut rand::thread_rng());
+    let _oracle_pk = secp256k1::PublicKey::from_secret_key(&secp, &_oracle_sk);
+    let _commitment_sk = secp256k1::SecretKey::new(&mut rand::thread_rng());
+    let _commitment_point = secp256k1::PublicKey::from_secret_key(&secp, &_commitment_sk);
+    let _game_id = GameId::new();
 
     // Both choose Rock
     let action_a = GameAction::Rps(RpsAction::Rock);
@@ -191,7 +189,7 @@ async fn test_guess_number_b_wins() {
 
     // Create encrypted preimages
     let encrypted_preimage_a = EncryptedPreimage::encrypt(&preimage_a, &sig_points.b_wins);
-    let encrypted_preimage_b = EncryptedPreimage::encrypt(&preimage_b, &sig_points.a_wins);
+    let _encrypted_preimage_b = EncryptedPreimage::encrypt(&preimage_b, &sig_points.a_wins);
 
     // Create commitments
     let commit_a = Commitment::new(&action_a.to_bytes(), &salt_a);

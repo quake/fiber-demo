@@ -41,6 +41,7 @@ impl From<&str> for AppError {
 }
 
 /// Oracle state
+#[allow(dead_code)]
 struct OracleState {
     /// Oracle's secret key (for signing)
     secret_key: secp256k1::SecretKey,
@@ -54,6 +55,7 @@ struct OracleState {
 
 /// State of a game session
 #[derive(Clone)]
+#[allow(dead_code)]
 struct GameState {
     game_type: GameType,
     amount_sat: u64,
@@ -77,6 +79,7 @@ struct GameState {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct RevealData {
     action: GameAction,
     salt: fiber_game_core::crypto::Salt,
