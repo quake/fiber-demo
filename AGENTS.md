@@ -24,6 +24,7 @@ cd fiber-escrow && cargo build
 # All tests in a workspace
 cd fiber-core && cargo test
 cd fiber-game && cargo test
+cd fiber-escrow && cargo test
 
 # Single test by name
 cd fiber-core && cargo test test_preimage_hash_roundtrip
@@ -37,15 +38,19 @@ cargo test -- --nocapture
 
 # End-to-end HTTP service tests (starts real services)
 cd fiber-game && cargo test --test e2e_game_flow -- --nocapture --test-threads=1
+cd fiber-escrow && cargo test --test e2e_escrow_flow -- --nocapture --test-threads=1
 ```
 
 ### Run Services
 
-**Note:** Services with Web UI must be started from their crate directory for static files to load correctly. Both Oracle and Player support the `PORT` environment variable.
+**Note:** Services with Web UI must be started from their crate directory for static files to load correctly. All services support the `PORT` environment variable.
 
 ```bash
 # Escrow demo (http://localhost:3000)
 cd fiber-escrow/crates/fiber-escrow-service && cargo run
+
+# With custom port
+cd fiber-escrow/crates/fiber-escrow-service && PORT=3001 cargo run
 
 # Game demo - Oracle (http://localhost:3000)
 # Note: Conflicts with Escrow, run one at a time
