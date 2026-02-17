@@ -64,7 +64,11 @@ async fn main() {
         .layer(cors)
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3000);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Escrow service starting on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
