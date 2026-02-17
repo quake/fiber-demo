@@ -71,6 +71,8 @@ struct PlayerGameState {
     commitment_point: Option<secp256k1::PublicKey>,
     opponent_encrypted_preimage: Option<EncryptedPreimage>,
     my_commitment: Option<Commitment>,
+    opponent_commitment: Option<Commitment>,
+    opponent_action: Option<GameAction>,
     phase: PlayerGamePhase,
     result: Option<GameResult>,
 }
@@ -157,6 +159,7 @@ struct GameStatusResponse {
     phase: PlayerGamePhase,
     result: Option<GameResult>,
     my_action: Option<GameAction>,
+    opponent_action: Option<GameAction>,
     can_settle: bool,
 }
 
@@ -282,6 +285,8 @@ async fn create_game(
         commitment_point,
         opponent_encrypted_preimage: None,
         my_commitment: None,
+        opponent_commitment: None,
+        opponent_action: None,
         phase: PlayerGamePhase::WaitingForOpponent,
         result: None,
     };
@@ -339,6 +344,8 @@ async fn join_game(
         commitment_point,
         opponent_encrypted_preimage: None,
         my_commitment: None,
+        opponent_commitment: None,
+        opponent_action: None,
         phase: PlayerGamePhase::ExchangingInvoices,
         result: None,
     };
@@ -358,49 +365,90 @@ async fn play(
     Path(game_id): Path<GameId>,
     Json(req): Json<PlayRequest>,
 ) -> Result<Json<PlayResponse>, AppError> {
-    // Update local state
-    {
+    // Update local state and create commitment
+    let (role, action, salt, commitment) = {
         let mut games = state.games.write().unwrap();
         let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
         game.action = Some(req.action.clone());
 
         // Create commitment
         let commitment = Commitment::new(&req.action.to_bytes(), &game.salt);
-        game.my_commitment = Some(commitment);
-    }
+        game.my_commitment = Some(commitment.clone());
+        
+        (game.role, req.action.clone(), game.salt.clone(), commitment)
+    };
 
     // Submit commitment to Oracle
-    let (url, body) = {
-        let games = state.games.read().unwrap();
-        let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
-
-        let url = format!("{}/game/{}/commit", state.oracle_url, game_id);
-        let body = serde_json::json!({
-            "player": game.role,
-            "commitment": game.my_commitment,
-        });
-        (url, body)
-    };
+    let commit_url = format!("{}/game/{}/commit", state.oracle_url, game_id);
+    let commit_body = serde_json::json!({
+        "player": role,
+        "commitment": commitment,
+    });
 
     state
         .http_client
-        .post(&url)
-        .json(&body)
+        .post(&commit_url)
+        .json(&commit_body)
         .send()
         .await
         .map_err(|e| AppError(e.to_string()))?;
 
-    // Update phase
+    info!("Submitted commitment for game {:?}", game_id);
+
+    // Update phase to Committed
     {
         let mut games = state.games.write().unwrap();
         let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
         game.phase = PlayerGamePhase::Committed;
     }
 
-    info!("Submitted action for game {:?}", game_id);
+    // Now submit reveal to Oracle
+    // The Oracle's reveal endpoint expects commit_a and commit_b
+    // We use our commitment for our slot, and a dummy for the opponent
+    // (Oracle will use what it has stored)
+    let reveal_url = format!("{}/game/{}/reveal", state.oracle_url, game_id);
+    let (commit_a, commit_b) = match role {
+        Player::A => (commitment.clone(), commitment.clone()), // Oracle uses stored commit_b
+        Player::B => (commitment.clone(), commitment.clone()), // Oracle uses stored commit_a
+    };
+    
+    let reveal_body = serde_json::json!({
+        "player": role,
+        "action": action,
+        "salt": salt,
+        "commit_a": commit_a,
+        "commit_b": commit_b,
+    });
+
+    let reveal_resp = state
+        .http_client
+        .post(&reveal_url)
+        .json(&reveal_body)
+        .send()
+        .await
+        .map_err(|e| AppError(e.to_string()))?;
+
+    let reveal_result: serde_json::Value = reveal_resp
+        .json()
+        .await
+        .map_err(|e| AppError(e.to_string()))?;
+
+    info!("Submitted reveal for game {:?}: {:?}", game_id, reveal_result);
+
+    // Update phase based on reveal response
+    let status = reveal_result["status"].as_str().unwrap_or("unknown");
+    {
+        let mut games = state.games.write().unwrap();
+        let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+        if status == "game_complete" {
+            game.phase = PlayerGamePhase::WaitingForResult;
+        } else {
+            game.phase = PlayerGamePhase::Revealed;
+        }
+    }
 
     Ok(Json(PlayResponse {
-        status: "committed".to_string(),
+        status: status.to_string(),
     }))
 }
 
@@ -408,6 +456,63 @@ async fn get_game_status(
     State(state): State<Arc<PlayerState>>,
     Path(game_id): Path<GameId>,
 ) -> Result<Json<GameStatusResponse>, AppError> {
+    // Check if we need to poll Oracle for result
+    let should_poll = {
+        let games = state.games.read().unwrap();
+        let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+        game.result.is_none() && (game.phase == PlayerGamePhase::Revealed || game.phase == PlayerGamePhase::WaitingForResult)
+    };
+
+    if should_poll {
+        // Poll Oracle for result
+        let url = format!("{}/game/{}/result", state.oracle_url, game_id);
+        let resp = state
+            .http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| AppError(e.to_string()))?;
+
+        let result_data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError(e.to_string()))?;
+
+        // Check if game is completed
+        if result_data["status"].as_str() == Some("completed") {
+            let mut games = state.games.write().unwrap();
+            let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+            
+            // Parse result
+            if let Some(result_str) = result_data["result"].as_str() {
+                game.result = match result_str {
+                    "AWins" => Some(GameResult::AWins),
+                    "BWins" => Some(GameResult::BWins),
+                    "Draw" => Some(GameResult::Draw),
+                    _ => None,
+                };
+            }
+
+            // Parse opponent action from game_data
+            if let Some(game_data) = result_data.get("game_data") {
+                let opp_action_key = match game.role {
+                    Player::A => "action_b",
+                    Player::B => "action_a",
+                };
+                
+                if let Some(opp_action) = game_data.get(opp_action_key) {
+                    game.opponent_action = serde_json::from_value(opp_action.clone()).ok();
+                }
+            }
+
+            game.phase = PlayerGamePhase::WaitingForResult;
+            if game.result.is_some() {
+                game.phase = PlayerGamePhase::WaitingForResult;
+            }
+        }
+    }
+
+    // Return current state
     let games = state.games.read().unwrap();
     let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
 
@@ -415,6 +520,7 @@ async fn get_game_status(
         phase: game.phase,
         result: game.result,
         my_action: game.action.clone(),
+        opponent_action: game.opponent_action.clone(),
         can_settle: game.result.is_some() && game.phase != PlayerGamePhase::Settled,
     }))
 }
@@ -423,21 +529,38 @@ async fn settle(
     State(state): State<Arc<PlayerState>>,
     Path(game_id): Path<GameId>,
 ) -> Result<Json<SettleResponse>, AppError> {
-    let games = state.games.read().unwrap();
-    let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+    let (result, amount_won, already_settled) = {
+        let games = state.games.read().unwrap();
+        let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
 
-    let result = game.result.ok_or(AppError::from("Game not complete"))?;
+        let result = game.result.ok_or(AppError::from("Game not complete"))?;
 
-    // Determine amount won/lost based on result and role
-    let amount_won = match (result, game.role) {
-        (GameResult::AWins, Player::A) | (GameResult::BWins, Player::B) => game.amount_sat as i64,
-        (GameResult::BWins, Player::A) | (GameResult::AWins, Player::B) => -(game.amount_sat as i64),
-        (GameResult::Draw, _) => 0,
+        // Check if already settled
+        if game.phase == PlayerGamePhase::Settled {
+            return Err(AppError::from("Game already settled"));
+        }
+
+        // Determine amount won/lost based on result and role
+        let amount_won = match (result, game.role) {
+            (GameResult::AWins, Player::A) | (GameResult::BWins, Player::B) => game.amount_sat as i64,
+            (GameResult::BWins, Player::A) | (GameResult::AWins, Player::B) => -(game.amount_sat as i64),
+            (GameResult::Draw, _) => 0,
+        };
+
+        (result, amount_won, game.phase == PlayerGamePhase::Settled)
     };
 
-    drop(games);
+    if already_settled {
+        return Err(AppError::from("Game already settled"));
+    }
 
-    // Update phase
+    // Adjust balance using MockFiberClient
+    // In a real implementation, this would involve actual Fiber invoice settlement
+    state.fiber_client.adjust_balance(amount_won);
+    
+    info!("Settled game {:?}: amount_won = {}", game_id, amount_won);
+
+    // Update phase to Settled
     {
         let mut games = state.games.write().unwrap();
         let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;

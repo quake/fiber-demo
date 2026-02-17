@@ -90,7 +90,6 @@ pub struct OracleSecretData {
 mod tests {
     use super::*;
     use crate::crypto::{Preimage, Salt};
-    use crate::games::RpsAction;
 
     #[test]
     fn test_message_serialization() {

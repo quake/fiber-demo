@@ -65,6 +65,17 @@ impl MockFiberClient {
             .map(|(hash, state)| (*hash, state.status))
             .collect()
     }
+
+    /// Adjust balance by the given amount (can be positive or negative)
+    /// Used for settlement simulation
+    pub fn adjust_balance(&self, amount: i64) {
+        let mut balance = self.balance.lock().unwrap();
+        if amount >= 0 {
+            *balance = balance.saturating_add(amount as u64);
+        } else {
+            *balance = balance.saturating_sub((-amount) as u64);
+        }
+    }
 }
 
 impl FiberClient for MockFiberClient {
