@@ -1,2 +1,0 @@
-fn(axum::extract::State<Arc<PlayerState>>, axum::extract::Path<GameId>, Json<PlayRequest>) -> impl std::future::Future<Output = Result<Json<PlayResponse>, AppError>> {play}
-fn(axum::extract::State<Arc<PlayerState>>, axum::extract::Path<GameId>, Json<PlayRequest>) -> impl std::future::Future<Output = Result<Json<PlayResponse>, AppError>> {play}: Handler<_, _>

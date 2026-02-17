@@ -1,1 +1,0 @@
-cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/Users/quake/workspace/fiber-demo/fiber-game/target/debug/build/mime_guess-3eeb4b6f93f41182/out/mime_types_generated.rs
