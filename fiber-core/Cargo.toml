@@ -1,0 +1,19 @@
+[package]
+name = "fiber-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Fiber Team"]
+description = "Shared Fiber Network primitives: crypto, traits, mock client"
+
+[dependencies]
+sha2 = "0.10"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+thiserror = "1.0"
+hex = "0.4"
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util", "macros"] }
