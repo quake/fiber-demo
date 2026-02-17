@@ -39,3 +39,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Internal crates
 fiber-game-core = { path = "crates/fiber-game-core" }
+
+# Shared core
+fiber-core = { path = "../fiber-core" }

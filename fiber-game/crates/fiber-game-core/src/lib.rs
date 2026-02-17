@@ -9,6 +9,6 @@ pub mod games;
 pub mod protocol;
 
 pub use crypto::{Commitment, EncryptedPreimage, PaymentHash, Preimage, Salt, SignaturePoint};
-pub use fiber::{FiberClient, FiberError, PaymentStatus};
+pub use fiber::{FiberClient, FiberError, MockFiberClient, PaymentId, PaymentStatus};
 pub use games::{GameAction, GameJudge, GameType, RpsAction};
 pub use protocol::{GameId, GameResult, Player};
