@@ -204,6 +204,12 @@ struct OracleSecretResponse {
     nonce: String,
 }
 
+#[derive(Serialize)]
+struct GameStatusResponse {
+    status: String,
+    has_opponent: bool,
+}
+
 impl OracleState {
     fn new() -> Self {
         let secp = secp256k1::Secp256k1::new();
@@ -504,6 +510,26 @@ async fn submit_reveal(
     }
 }
 
+async fn get_game_status(
+    State(state): State<Arc<OracleState>>,
+    Path(game_id): Path<GameId>,
+) -> Result<Json<GameStatusResponse>, AppError> {
+    let games = state.games.read().unwrap();
+    let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+
+    let status = match game.status {
+        GameStatus::WaitingForOpponent => "waiting_for_opponent",
+        GameStatus::InProgress => "in_progress",
+        GameStatus::Completed => "completed",
+        GameStatus::Cancelled => "cancelled",
+    };
+
+    Ok(Json(GameStatusResponse {
+        status: status.to_string(),
+        has_opponent: game.player_b_id.is_some(),
+    }))
+}
+
 async fn get_result(
     State(state): State<Arc<OracleState>>,
     Path(game_id): Path<GameId>,
@@ -559,6 +585,7 @@ fn create_router(state: Arc<OracleState>) -> Router {
         )
         .route("/game/:game_id/commit", post(submit_commit))
         .route("/game/:game_id/reveal", post(submit_reveal))
+        .route("/game/:game_id/status", get(get_game_status))
         .route("/game/:game_id/result", get(get_result))
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -572,6 +599,11 @@ async fn main() {
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
+    let port: u16 = std::env::var("PORT")
+        .unwrap_or_else(|_| "3000".to_string())
+        .parse()
+        .unwrap_or(3000);
+
     let state = Arc::new(OracleState::new());
 
     info!(
@@ -581,8 +613,8 @@ async fn main() {
 
     let app = create_router(state);
 
-    let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    info!("Oracle service listening on http://0.0.0.0:3000");
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+    info!("Oracle service listening on http://0.0.0.0:{}", port);
 
     axum::serve(listener, app).await.unwrap();
 }

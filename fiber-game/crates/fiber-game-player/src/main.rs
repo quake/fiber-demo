@@ -219,6 +219,31 @@ async fn get_available_games(
 }
 
 async fn get_my_games(State(state): State<Arc<PlayerState>>) -> Json<MyGamesResponse> {
+    // First, check Oracle for any games waiting for opponent
+    let games_to_check: Vec<GameId> = {
+        let games = state.games.read().unwrap();
+        games
+            .iter()
+            .filter(|(_, g)| g.phase == PlayerGamePhase::WaitingForOpponent)
+            .map(|(id, _)| *id)
+            .collect()
+    };
+
+    // Update phase for games where opponent has joined
+    for game_id in games_to_check {
+        let url = format!("{}/game/{}/status", state.oracle_url, game_id);
+        if let Ok(resp) = state.http_client.get(&url).send().await {
+            if let Ok(status_data) = resp.json::<serde_json::Value>().await {
+                if status_data["has_opponent"].as_bool() == Some(true) {
+                    let mut games = state.games.write().unwrap();
+                    if let Some(game) = games.get_mut(&game_id) {
+                        game.phase = PlayerGamePhase::WaitingForAction;
+                    }
+                }
+            }
+        }
+    }
+
     let games = state.games.read().unwrap();
     let my_games: Vec<MyGameResponse> = games
         .iter()
@@ -456,6 +481,29 @@ async fn get_game_status(
     State(state): State<Arc<PlayerState>>,
     Path(game_id): Path<GameId>,
 ) -> Result<Json<GameStatusResponse>, AppError> {
+    // Check current phase
+    let current_phase = {
+        let games = state.games.read().unwrap();
+        let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+        game.phase
+    };
+
+    // If waiting for opponent, check if opponent has joined
+    if current_phase == PlayerGamePhase::WaitingForOpponent {
+        let url = format!("{}/game/{}/status", state.oracle_url, game_id);
+        if let Ok(resp) = state.http_client.get(&url).send().await {
+            if let Ok(status_data) = resp.json::<serde_json::Value>().await {
+                if status_data["has_opponent"].as_bool() == Some(true) {
+                    // Opponent has joined, update phase
+                    let mut games = state.games.write().unwrap();
+                    if let Some(game) = games.get_mut(&game_id) {
+                        game.phase = PlayerGamePhase::WaitingForAction;
+                    }
+                }
+            }
+        }
+    }
+
     // Check if we need to poll Oracle for result
     let should_poll = {
         let games = state.games.read().unwrap();
