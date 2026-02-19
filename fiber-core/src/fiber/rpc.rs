@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 /// Currency for Fiber invoices
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "PascalCase")]
 pub enum Currency {
     /// Mainnet
     Fibb,
@@ -29,7 +29,7 @@ impl Default for Currency {
 
 /// Invoice status from Fiber RPC
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "PascalCase")]
 pub enum CkbInvoiceStatus {
     /// The invoice is open and can be paid
     Open,
@@ -73,12 +73,16 @@ impl RpcFiberClient {
     }
 
     /// Make a JSON-RPC call
+    /// Note: Fiber RPC expects params as an array containing a single object
     async fn call(&self, method: &str, params: Value) -> Result<Value, FiberError> {
+        // Wrap params in array as required by Fiber RPC
+        let params_array = json!([params]);
+        
         let request = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": method,
-            "params": params
+            "params": params_array
         });
 
         let response = self
@@ -121,11 +125,18 @@ impl FiberClient for RpcFiberClient {
         // Note: Fiber uses shannons as the base unit
         let amount_shannons = amount_sat * 100;
 
+        // final_expiry_delta is in milliseconds
+        // Fiber requires minimum of 9,600,000 ms (160 minutes / 2h40m)
+        // We use the minimum value to allow faster testing
+        let final_expiry_delta_ms: u64 = 9_600_000; // 160 minutes in milliseconds (Fiber minimum)
+
         let params = json!({
             "amount": format!("0x{:x}", amount_shannons),
             "currency": self.currency,
             "payment_hash": payment_hash.to_hex(),
             "expiry": format!("0x{:x}", expiry_secs),
+            "final_expiry_delta": format!("0x{:x}", final_expiry_delta_ms),
+            "description": "Fiber Escrow Payment",
         });
 
         let result = self.call("new_invoice", params).await?;
@@ -250,16 +261,23 @@ mod tests {
     fn test_currency_serialization() {
         assert_eq!(
             serde_json::to_string(&Currency::Fibt).unwrap(),
-            "\"fibt\""
+            "\"Fibt\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Currency::Fibb).unwrap(),
+            "\"Fibb\""
         );
     }
 
     #[test]
     fn test_invoice_status_deserialization() {
-        let status: CkbInvoiceStatus = serde_json::from_str("\"open\"").unwrap();
+        let status: CkbInvoiceStatus = serde_json::from_str("\"Open\"").unwrap();
         assert_eq!(status, CkbInvoiceStatus::Open);
 
-        let status: CkbInvoiceStatus = serde_json::from_str("\"received\"").unwrap();
+        let status: CkbInvoiceStatus = serde_json::from_str("\"Received\"").unwrap();
         assert_eq!(status, CkbInvoiceStatus::Received);
+        
+        let status: CkbInvoiceStatus = serde_json::from_str("\"Paid\"").unwrap();
+        assert_eq!(status, CkbInvoiceStatus::Paid);
     }
 }

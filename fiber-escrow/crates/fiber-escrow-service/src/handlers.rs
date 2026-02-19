@@ -56,8 +56,9 @@ pub struct ProductResponse {
 #[derive(Deserialize)]
 pub struct CreateOrderRequest {
     pub product_id: Uuid,
-    /// Payment hash (hex string with 0x prefix) - buyer generates this from their preimage
-    pub payment_hash: String,
+    /// Preimage (hex string with 0x prefix) - buyer generates this secretly
+    /// Escrow stores it and computes payment_hash for the invoice
+    pub preimage: String,
 }
 
 #[derive(Deserialize)]
@@ -96,8 +97,7 @@ pub struct DisputeRequest {
 
 #[derive(Deserialize)]
 pub struct ConfirmOrderRequest {
-    /// Preimage (hex string with 0x prefix) - revealed by buyer to confirm receipt
-    pub preimage: String,
+    // Preimage is no longer needed - escrow already holds it from order creation
 }
 
 #[derive(Deserialize)]
@@ -292,16 +292,17 @@ pub async fn create_order(
         }
     };
 
-    // Parse payment_hash from hex
-    let payment_hash = match fiber_core::PaymentHash::from_hex(&req.payment_hash) {
-        Ok(h) => h,
+    // Parse preimage from hex and compute payment_hash
+    let preimage = match fiber_core::Preimage::from_hex(&req.preimage) {
+        Ok(p) => p,
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid payment_hash format, expected hex string"})),
+                Json(serde_json::json!({"error": "Invalid preimage format, expected hex string"})),
             )
         }
     };
+    let payment_hash = preimage.payment_hash();
 
     let product_id = ProductId(req.product_id);
     let product = match state.get_product(product_id) {
@@ -314,13 +315,6 @@ pub async fn create_order(
         }
     };
 
-    if product.status != ProductStatus::Available {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Product not available"})),
-        );
-    }
-
     if product.seller_id == buyer_id {
         return (
             StatusCode::BAD_REQUEST,
@@ -328,14 +322,14 @@ pub async fn create_order(
         );
     }
 
-    // Mark product as sold
-    state.mark_product_sold(product_id);
-
-    // Create order with buyer's payment_hash
+    // Create order with computed payment_hash
     let order = state.create_order(&product, buyer_id, payment_hash.clone());
 
+    // Store preimage immediately (escrow holds it for timeout/dispute settlement)
+    state.set_revealed_preimage(order.id, preimage);
+
     // If Fiber client is configured, create hold invoice on seller's node
-    let invoice_string = if let Some(fiber_client) = state.fiber_client() {
+    let invoice_string = if let Some(fiber_client) = state.seller_fiber_client() {
         match fiber_client
             .create_hold_invoice(&payment_hash, order.amount_sat, 24 * 60 * 60) // 24 hour expiry
             .await
@@ -346,8 +340,6 @@ pub async fn create_order(
                 Some(invoice.invoice_string)
             }
             Err(e) => {
-                // Rollback: mark product available again
-                state.mark_product_available(product_id);
                 // TODO: Also need to delete the order from state
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -541,7 +533,7 @@ pub async fn pay_order(
         );
     }
 
-    // Require invoice to be submitted before payment can be marked
+    // Require invoice to be submitted before payment can be confirmed
     if order.invoice_string.is_none() {
         return (
             StatusCode::BAD_REQUEST,
@@ -549,7 +541,64 @@ pub async fn pay_order(
         );
     }
 
-    // Trust-based: buyer notifies that payment was made to seller's hold invoice
+    // If Fiber client is configured, verify payment status on seller's node
+    // Buyer should have already paid the invoice from their own wallet
+    if let Some(seller_client) = state.seller_fiber_client() {
+        // Poll for payment to be held (max 30 seconds, check every 2 seconds)
+        // This gives time for the payment to propagate through the network
+        let max_attempts = 15;
+        let mut confirmed = false;
+
+        for attempt in 0..max_attempts {
+            match seller_client.get_payment_status(&order.payment_hash).await {
+                Ok(status) => {
+                    tracing::debug!(
+                        "Payment status check {}/{}: {:?}",
+                        attempt + 1,
+                        max_attempts,
+                        status
+                    );
+                    match status {
+                        fiber_core::PaymentStatus::Held => {
+                            confirmed = true;
+                            break;
+                        }
+                        fiber_core::PaymentStatus::Settled => {
+                            // Already settled (shouldn't happen at this stage)
+                            confirmed = true;
+                            break;
+                        }
+                        fiber_core::PaymentStatus::Cancelled => {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({"error": "Payment was cancelled"})),
+                            );
+                        }
+                        fiber_core::PaymentStatus::Pending => {
+                            // Still waiting, continue polling
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to check payment status: {}", e);
+                }
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        }
+
+        if !confirmed {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Payment not received. Please pay the invoice first, then call this endpoint."
+                })),
+            );
+        }
+    }
+    // If no Fiber client configured, operate in trust mode (for testing)
+
+    // Update order status to funded
     state.update_order_status(order_id, OrderStatus::Funded);
 
     (
@@ -610,7 +659,7 @@ pub async fn confirm_order(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(order_id): Path<Uuid>,
-    Json(req): Json<ConfirmOrderRequest>,
+    Json(_req): Json<ConfirmOrderRequest>,
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&headers) {
         Some(id) => id,
@@ -618,17 +667,6 @@ pub async fn confirm_order(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "Missing X-User-Id header"})),
-            )
-        }
-    };
-
-    // Parse preimage from hex
-    let preimage = match fiber_core::Preimage::from_hex(&req.preimage) {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid preimage format, expected hex string"})),
             )
         }
     };
@@ -658,20 +696,22 @@ pub async fn confirm_order(
         );
     }
 
-    // Verify preimage matches payment_hash
-    if !order.payment_hash.verify(&preimage) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Preimage does not match payment_hash"})),
-        );
-    }
+    // Get preimage from escrow storage (stored at order creation)
+    let preimage = match state.get_revealed_preimage(order_id) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Preimage not found in escrow"})),
+            )
+        }
+    };
 
-    // Store revealed preimage and mark order as completed
-    state.set_revealed_preimage(order_id, preimage.clone());
+    // Mark order as completed
     state.update_order_status(order_id, OrderStatus::Completed);
 
     // If Fiber client is configured, settle the hold invoice on seller's node
-    if let Some(fiber_client) = state.fiber_client() {
+    if let Some(fiber_client) = state.seller_fiber_client() {
         if let Err(e) = fiber_client
             .settle_invoice(&order.payment_hash, &preimage)
             .await
@@ -683,14 +723,15 @@ pub async fn confirm_order(
                 order_id.0,
                 e
             );
+        } else {
+            tracing::info!("Invoice settled for order {}", order_id.0);
         }
     }
 
     (
         StatusCode::OK,
         Json(serde_json::json!({
-            "status": "completed",
-            "preimage": hex::encode(preimage.as_bytes())
+            "status": "completed"
         })),
     )
 }
@@ -790,21 +831,70 @@ pub async fn resolve_dispute(
         }
     };
 
-    // For seller resolution, the revealed preimage (if any) allows seller to settle
-    // For buyer resolution, buyer's payment auto-expires (no preimage revealed)
-    let preimage = match resolution {
-        DisputeResolution::ToSeller => {
-            // Arbiter needs preimage to resolve to seller
-            // In buyer-holds-preimage model, arbiter might need buyer to reveal it
-            // or use a different mechanism. For now, return revealed preimage if available.
-            state.get_revealed_preimage(order_id).map(|p| hex::encode(p.as_bytes()))
+    // Handle Fiber invoice based on resolution
+    let mut preimage_hex: Option<String> = None;
+
+    if let Some(fiber_client) = state.seller_fiber_client() {
+        match resolution {
+            DisputeResolution::ToSeller => {
+                // Settle invoice - seller gets paid
+                if let Some(preimage) = state.get_revealed_preimage(order_id) {
+                    match fiber_client
+                        .settle_invoice(&order.payment_hash, &preimage)
+                        .await
+                    {
+                        Ok(()) => {
+                            tracing::info!(
+                                "Settled invoice for disputed order {} (resolved to seller)",
+                                order_id.0
+                            );
+                            preimage_hex = Some(hex::encode(preimage.as_bytes()));
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to settle invoice for disputed order {}: {}",
+                                order_id.0,
+                                e
+                            );
+                            // Continue with resolution even if settlement fails
+                            // Manual intervention may be needed
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        "No preimage found for disputed order {} - cannot settle invoice",
+                        order_id.0
+                    );
+                }
+            }
+            DisputeResolution::ToBuyer => {
+                // Cancel invoice - buyer gets refund
+                match fiber_client.cancel_invoice(&order.payment_hash).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            "Cancelled invoice for disputed order {} (resolved to buyer)",
+                            order_id.0
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to cancel invoice for disputed order {}: {}",
+                            order_id.0,
+                            e
+                        );
+                        // Continue with resolution even if cancellation fails
+                    }
+                }
+            }
         }
-        DisputeResolution::ToBuyer => {
-            // Mark product as available again for buyer refund case
-            state.mark_product_available(order.product_id);
-            None
+    } else {
+        // No Fiber client - just update state and return preimage if resolving to seller
+        if resolution == DisputeResolution::ToSeller {
+            if let Some(preimage) = state.get_revealed_preimage(order_id) {
+                preimage_hex = Some(hex::encode(preimage.as_bytes()));
+            }
         }
-    };
+    }
 
     state.resolve_dispute(order_id, resolution);
 
@@ -813,7 +903,7 @@ pub async fn resolve_dispute(
         Json(serde_json::json!({
             "status": "resolved",
             "resolution": req.resolution,
-            "preimage": preimage
+            "preimage": preimage_hex
         })),
     )
 }
@@ -824,11 +914,137 @@ pub async fn tick(State(state): State<AppState>, Json(req): Json<TickRequest>) -
     state.advance_time(req.seconds);
 
     // Process expired orders (auto-confirm shipped orders)
-    let expired_order_ids = state.process_expired_orders();
+    let expired_orders = state.process_expired_orders();
 
-    // Note: For expired orders, preimage is now available for seller to claim
-    // Seller should query the order to get preimage for settlement
+    // Settle invoices for expired orders that have preimage
+    if let Some(fiber_client) = state.seller_fiber_client() {
+        for (order_id, payment_hash, preimage_opt) in &expired_orders {
+            if let Some(preimage) = preimage_opt {
+                match fiber_client.settle_invoice(payment_hash, preimage).await {
+                    Ok(()) => {
+                        tracing::info!("Settled invoice for expired order {}", order_id.0);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to settle invoice for expired order {}: {}",
+                            order_id.0,
+                            e
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "Expired order {} has no preimage, cannot settle invoice",
+                    order_id.0
+                );
+            }
+        }
+    }
 
-    let expired: Vec<Uuid> = expired_order_ids.iter().map(|id| id.0).collect();
+    let expired: Vec<Uuid> = expired_orders.iter().map(|(id, _, _)| id.0).collect();
     Json(serde_json::json!(TickResponse { expired_orders: expired }))
+}
+
+// ============ Fiber RPC Proxy handlers ============
+
+#[derive(Deserialize)]
+pub struct SendPaymentProxyRequest {
+    /// Invoice to pay
+    pub invoice: String,
+}
+
+/// Proxy send_payment request to buyer's Fiber node
+/// Uses FIBER_BUYER_RPC_URL environment variable
+pub async fn send_payment_proxy(
+    State(state): State<AppState>,
+    Json(req): Json<SendPaymentProxyRequest>,
+) -> impl IntoResponse {
+    // Get buyer RPC URL from server config
+    let buyer_rpc_url = match state.buyer_fiber_rpc_url() {
+        Some(url) => url.to_string(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Buyer Fiber RPC not configured (set FIBER_BUYER_RPC_URL)"})),
+            );
+        }
+    };
+
+    // Create HTTP client and send RPC request
+    let client = reqwest::Client::new();
+    
+    let rpc_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "send_payment",
+        "params": [{"invoice": req.invoice}]
+    });
+
+    println!("[send_payment_proxy] Sending to {}: {}", buyer_rpc_url, serde_json::to_string(&rpc_request).unwrap_or_default());
+
+    match client
+        .post(&buyer_rpc_url)
+        .header("Content-Type", "application/json")
+        .json(&rpc_request)
+        .send()
+        .await
+    {
+        Ok(response) => {
+            let status_code = response.status();
+            match response.text().await {
+                Ok(text) => {
+                    println!("[send_payment_proxy] Raw response (HTTP {}): {}", status_code, text);
+                    
+                    match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(json) => {
+                            // Log the parsed JSON structure
+                            if let Some(result) = json.get("result") {
+                                println!("[send_payment_proxy] Parsed result: {}", serde_json::to_string_pretty(result).unwrap_or_default());
+                                if let Some(status) = result.get("status") {
+                                    println!("[send_payment_proxy] Payment status: {}", status);
+                                }
+                                if let Some(failed_error) = result.get("failed_error") {
+                                    println!("[send_payment_proxy] Failed error: {}", failed_error);
+                                }
+                            }
+                            
+                            if let Some(error) = json.get("error") {
+                                let error_msg = error
+                                    .get("message")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("RPC error");
+                                (
+                                    StatusCode::BAD_REQUEST,
+                                    Json(serde_json::json!({"error": error_msg, "details": error})),
+                                )
+                            } else if let Some(result) = json.get("result") {
+                                // Return the full result, frontend will check status
+                                (StatusCode::OK, Json(result.clone()))
+                            } else {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(serde_json::json!({"error": "Invalid RPC response", "raw": text})),
+                                )
+                            }
+                        }
+                        Err(e) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": format!("Failed to parse JSON: {}", e), "raw": text})),
+                        ),
+                    }
+                }
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("Failed to read response: {}", e)})),
+                ),
+            }
+        }
+        Err(e) => {
+            println!("[send_payment_proxy] Connection error: {}", e);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("Failed to connect to Fiber node: {}", e)})),
+            )
+        }
+    }
 }

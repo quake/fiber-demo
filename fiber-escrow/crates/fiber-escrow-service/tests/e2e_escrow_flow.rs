@@ -139,16 +139,16 @@ fn test_escrow_happy_path() {
 
     let client = EscrowClient::new(&base_url);
 
-    // Get pre-registered user IDs (alice=seller, bob=buyer)
-    let alice_id = get_user_id_by_username(&client, "alice");
-    let bob_id = get_user_id_by_username(&client, "bob");
-    println!("Alice ID: {}, Bob ID: {}", alice_id, bob_id);
+    // Get pre-registered user IDs
+    let seller_id = get_user_id_by_username(&client, "seller");
+    let buyer_id = get_user_id_by_username(&client, "buyer");
+    println!("Seller ID: {}, Buyer ID: {}", seller_id, buyer_id);
 
-    let alice_client = EscrowClient::new(&base_url).with_user(&alice_id);
-    let bob_client = EscrowClient::new(&base_url).with_user(&bob_id);
+    let seller_client = EscrowClient::new(&base_url).with_user(&seller_id);
+    let buyer_client = EscrowClient::new(&base_url).with_user(&buyer_id);
 
-    // 1. Alice creates a product
-    let create_product_resp: serde_json::Value = alice_client
+    // 1. Seller creates a product
+    let create_product_resp: serde_json::Value = seller_client
         .post("/api/products")
         .json(&serde_json::json!({
             "title": "Test Widget",
@@ -165,18 +165,18 @@ fn test_escrow_happy_path() {
         .expect("No product_id in response");
     println!("Created product: {}", product_id);
 
-    // 2. Bob generates preimage and payment_hash, then creates order
-    let (bob_preimage, bob_payment_hash) = generate_preimage_and_hash();
+    // 2. Buyer generates preimage and payment_hash, then creates order
+    let (buyer_preimage, buyer_payment_hash) = generate_preimage_and_hash();
     println!(
-        "Bob's preimage: {}, payment_hash: {}",
-        bob_preimage, bob_payment_hash
+        "Buyer's preimage: {}, payment_hash: {}",
+        buyer_preimage, buyer_payment_hash
     );
 
-    let create_order_resp: serde_json::Value = bob_client
+    let create_order_resp: serde_json::Value = buyer_client
         .post("/api/orders")
         .json(&serde_json::json!({
             "product_id": product_id,
-            "payment_hash": bob_payment_hash
+            "preimage": buyer_preimage
         }))
         .send()
         .expect("Failed to create order")
@@ -195,9 +195,9 @@ fn test_escrow_happy_path() {
         order_id, payment_hash, amount_sat
     );
 
-    // 3. Alice submits invoice (using payment_hash to create it)
+    // 3. Seller submits invoice (using payment_hash to create it)
     let invoice_string = format!("test_invoice_{}", payment_hash);
-    let submit_invoice_resp: serde_json::Value = alice_client
+    let submit_invoice_resp: serde_json::Value = seller_client
         .post(&format!("/api/orders/{}/invoice", order_id))
         .json(&serde_json::json!({
             "invoice": invoice_string
@@ -213,8 +213,8 @@ fn test_escrow_happy_path() {
     );
     println!("Invoice submitted: {}", invoice_string);
 
-    // 4. Bob gets order details and sees invoice_string
-    let order_details: serde_json::Value = bob_client
+    // 4. Buyer gets order details and sees invoice_string
+    let order_details: serde_json::Value = buyer_client
         .get(&format!("/api/orders/{}", order_id))
         .send()
         .expect("Failed to get order details")
@@ -226,12 +226,12 @@ fn test_escrow_happy_path() {
         Some(invoice_string.as_str())
     );
     println!(
-        "Bob sees invoice: {}",
+        "Buyer sees invoice: {}",
         order_details["invoice_string"].as_str().unwrap()
     );
 
-    // 5. Bob pays for the order (notifies payment done)
-    let pay_resp: serde_json::Value = bob_client
+    // 5. Buyer pays for the order (notifies payment done)
+    let pay_resp: serde_json::Value = buyer_client
         .post(&format!("/api/orders/{}/pay", order_id))
         .send()
         .expect("Failed to pay order")
@@ -241,8 +241,8 @@ fn test_escrow_happy_path() {
     assert_eq!(pay_resp["status"].as_str(), Some("funded"));
     println!("Order funded");
 
-    // 6. Alice ships the order
-    let ship_resp: serde_json::Value = alice_client
+    // 6. Seller ships the order
+    let ship_resp: serde_json::Value = seller_client
         .post(&format!("/api/orders/{}/ship", order_id))
         .send()
         .expect("Failed to ship order")
@@ -252,40 +252,35 @@ fn test_escrow_happy_path() {
     assert_eq!(ship_resp["status"].as_str(), Some("shipped"));
     println!("Order shipped");
 
-    // 7. Bob confirms receipt by revealing preimage
-    let confirm_resp: serde_json::Value = bob_client
+    // 7. Buyer confirms receipt (preimage already stored in escrow)
+    let confirm_resp: serde_json::Value = buyer_client
         .post(&format!("/api/orders/{}/confirm", order_id))
-        .json(&serde_json::json!({
-            "preimage": bob_preimage
-        }))
+        .json(&serde_json::json!({}))
         .send()
         .expect("Failed to confirm order")
         .json()
         .expect("Failed to parse confirm response");
 
     assert_eq!(confirm_resp["status"].as_str(), Some("completed"));
-    let preimage = confirm_resp["preimage"]
-        .as_str()
-        .expect("No preimage in confirm response");
-    println!("Order completed, preimage: {}", preimage);
+    println!("Order completed");
 
-    // 8. Alice gets order details -> sees preimage for settlement
-    let alice_order_details: serde_json::Value = alice_client
+    // 8. Seller gets order details -> sees preimage for settlement
+    let seller_order_details: serde_json::Value = seller_client
         .get(&format!("/api/orders/{}", order_id))
         .send()
-        .expect("Failed to get order details for alice")
+        .expect("Failed to get order details for seller")
         .json()
         .expect("Failed to parse order details");
 
-    let alice_preimage = alice_order_details["preimage"]
+    let seller_preimage = seller_order_details["preimage"]
         .as_str()
-        .expect("Alice should see preimage after completion");
+        .expect("Seller should see preimage after completion");
     // Preimage returned is without 0x prefix
-    let bob_preimage_no_prefix = bob_preimage.strip_prefix("0x").unwrap_or(&bob_preimage);
-    assert_eq!(alice_preimage, bob_preimage_no_prefix);
+    let buyer_preimage_no_prefix = buyer_preimage.strip_prefix("0x").unwrap_or(&buyer_preimage);
+    assert_eq!(seller_preimage, buyer_preimage_no_prefix);
     println!(
-        "Alice retrieved preimage for settlement: {}",
-        alice_preimage
+        "Seller retrieved preimage for settlement: {}",
+        seller_preimage
     );
 
     println!("Test passed: Happy path escrow flow completed successfully");
@@ -309,14 +304,14 @@ fn test_escrow_dispute_refund_to_buyer() {
 
     let client = EscrowClient::new(&base_url);
 
-    let alice_id = get_user_id_by_username(&client, "alice");
-    let bob_id = get_user_id_by_username(&client, "bob");
+    let seller_id = get_user_id_by_username(&client, "seller");
+    let buyer_id = get_user_id_by_username(&client, "buyer");
 
-    let alice_client = EscrowClient::new(&base_url).with_user(&alice_id);
-    let bob_client = EscrowClient::new(&base_url).with_user(&bob_id);
+    let seller_client = EscrowClient::new(&base_url).with_user(&seller_id);
+    let buyer_client = EscrowClient::new(&base_url).with_user(&buyer_id);
 
-    // 1. Alice creates a product
-    let create_product_resp: serde_json::Value = alice_client
+    // 1. Seller creates a product
+    let create_product_resp: serde_json::Value = seller_client
         .post("/api/products")
         .json(&serde_json::json!({
             "title": "Disputed Widget",
@@ -330,14 +325,14 @@ fn test_escrow_dispute_refund_to_buyer() {
 
     let product_id = create_product_resp["product_id"].as_str().unwrap();
 
-    // 2. Bob generates preimage and creates order with payment_hash
-    let (_bob_preimage, bob_payment_hash) = generate_preimage_and_hash();
+    // 2. Buyer generates preimage and creates order with preimage
+    let (buyer_preimage, _buyer_payment_hash) = generate_preimage_and_hash();
 
-    let create_order_resp: serde_json::Value = bob_client
+    let create_order_resp: serde_json::Value = buyer_client
         .post("/api/orders")
         .json(&serde_json::json!({
             "product_id": product_id,
-            "payment_hash": bob_payment_hash
+            "preimage": buyer_preimage
         }))
         .send()
         .unwrap()
@@ -351,9 +346,9 @@ fn test_escrow_dispute_refund_to_buyer() {
         order_id, payment_hash
     );
 
-    // 3. Alice submits invoice
+    // 3. Seller submits invoice
     let invoice_string = format!("test_invoice_{}", payment_hash);
-    let _submit_invoice_resp: serde_json::Value = alice_client
+    let _submit_invoice_resp: serde_json::Value = seller_client
         .post(&format!("/api/orders/{}/invoice", order_id))
         .json(&serde_json::json!({
             "invoice": invoice_string
@@ -364,8 +359,8 @@ fn test_escrow_dispute_refund_to_buyer() {
         .unwrap();
     println!("Invoice submitted");
 
-    // 4. Bob pays for the order
-    let _pay_resp: serde_json::Value = bob_client
+    // 4. Buyer pays for the order
+    let _pay_resp: serde_json::Value = buyer_client
         .post(&format!("/api/orders/{}/pay", order_id))
         .send()
         .unwrap()
@@ -373,8 +368,8 @@ fn test_escrow_dispute_refund_to_buyer() {
         .unwrap();
     println!("Order funded");
 
-    // 5. Bob disputes the order (before shipping)
-    let dispute_resp: serde_json::Value = bob_client
+    // 5. Buyer disputes the order (before shipping)
+    let dispute_resp: serde_json::Value = buyer_client
         .post(&format!("/api/orders/{}/dispute", order_id))
         .json(&serde_json::json!({
             "reason": "Seller is not responding"
@@ -416,7 +411,6 @@ fn test_escrow_dispute_refund_to_buyer() {
     assert_eq!(resolve_resp["status"].as_str(), Some("resolved"));
     assert_eq!(resolve_resp["resolution"].as_str(), Some("buyer"));
     // Preimage should NOT be revealed when resolved to buyer (payment expires/refunds)
-    // In buyer-holds-preimage model, buyer simply doesn't reveal it
     assert!(
         resolve_resp["preimage"].is_null(),
         "Preimage should be null when resolved to buyer"
@@ -447,14 +441,14 @@ fn test_escrow_dispute_resolved_to_seller() {
 
     let client = EscrowClient::new(&base_url);
 
-    let alice_id = get_user_id_by_username(&client, "alice");
-    let bob_id = get_user_id_by_username(&client, "bob");
+    let seller_id = get_user_id_by_username(&client, "seller");
+    let buyer_id = get_user_id_by_username(&client, "buyer");
 
-    let alice_client = EscrowClient::new(&base_url).with_user(&alice_id);
-    let bob_client = EscrowClient::new(&base_url).with_user(&bob_id);
+    let seller_client = EscrowClient::new(&base_url).with_user(&seller_id);
+    let buyer_client = EscrowClient::new(&base_url).with_user(&buyer_id);
 
-    // 1. Alice creates a product
-    let create_product_resp: serde_json::Value = alice_client
+    // 1. Seller creates a product
+    let create_product_resp: serde_json::Value = seller_client
         .post("/api/products")
         .json(&serde_json::json!({
             "title": "Seller Wins Widget",
@@ -468,14 +462,14 @@ fn test_escrow_dispute_resolved_to_seller() {
 
     let product_id = create_product_resp["product_id"].as_str().unwrap();
 
-    // 2. Bob generates preimage and creates order
-    let (bob_preimage, bob_payment_hash) = generate_preimage_and_hash();
+    // 2. Buyer generates preimage and creates order
+    let (buyer_preimage, _buyer_payment_hash) = generate_preimage_and_hash();
 
-    let create_order_resp: serde_json::Value = bob_client
+    let create_order_resp: serde_json::Value = buyer_client
         .post("/api/orders")
         .json(&serde_json::json!({
             "product_id": product_id,
-            "payment_hash": bob_payment_hash
+            "preimage": buyer_preimage
         }))
         .send()
         .unwrap()
@@ -485,53 +479,54 @@ fn test_escrow_dispute_resolved_to_seller() {
     let order_id = create_order_resp["order_id"].as_str().unwrap();
     let payment_hash = create_order_resp["payment_hash"].as_str().unwrap();
 
-    // 3. Alice submits invoice
+    // 3. Seller submits invoice
     let invoice_string = format!("test_invoice_{}", payment_hash);
-    alice_client
+    seller_client
         .post(&format!("/api/orders/{}/invoice", order_id))
         .json(&serde_json::json!({ "invoice": invoice_string }))
         .send()
         .unwrap();
 
-    // 4. Bob pays
-    bob_client
+    // 4. Buyer pays
+    buyer_client
         .post(&format!("/api/orders/{}/pay", order_id))
         .send()
         .unwrap();
 
-    // 5. Alice ships
-    alice_client
+    // 5. Seller ships
+    seller_client
         .post(&format!("/api/orders/{}/ship", order_id))
         .send()
         .unwrap();
 
-    // 6. Bob disputes (maybe unreasonably)
-    bob_client
+    // 6. Buyer disputes (maybe unreasonably)
+    buyer_client
         .post(&format!("/api/orders/{}/dispute", order_id))
         .json(&serde_json::json!({ "reason": "Item not as described" }))
         .send()
         .unwrap();
 
-    // 7. Before arbiter resolves, bob must reveal preimage (cooperatively)
-    // In a real system, arbiter might require buyer to prove good faith by revealing preimage
-    // Here we simulate bob confirming (revealing preimage) before resolution
-    let confirm_resp: serde_json::Value = bob_client
+    // 7. Try to confirm disputed order (should fail)
+    // In escrow-holds-preimage model, preimage is already stored, but confirm fails
+    // because order is in Disputed state, not Shipped
+    let confirm_resp: serde_json::Value = buyer_client
         .post(&format!("/api/orders/{}/confirm", order_id))
-        .json(&serde_json::json!({ "preimage": bob_preimage }))
+        .json(&serde_json::json!({}))
         .send()
         .unwrap()
         .json()
         .unwrap();
 
-    // Note: confirm_order now fails because order is Disputed, not Shipped
-    // This is expected behavior - let's check the response
-    if confirm_resp.get("error").is_some() {
-        println!("Cannot confirm disputed order (expected), preimage must be revealed another way");
-    }
+    // confirm_order fails because order is Disputed, not Shipped
+    // This is expected behavior
+    assert!(
+        confirm_resp.get("error").is_some(),
+        "Should fail to confirm disputed order"
+    );
+    println!("Cannot confirm disputed order (expected)");
 
     // 8. Arbiter resolves to seller
-    // In buyer-holds-preimage model, if resolved to seller without buyer cooperation,
-    // the preimage may not be available. This is a limitation of the model.
+    // In escrow-holds-preimage model, preimage is always available for settlement
     let resolve_resp: serde_json::Value = client
         .post(&format!("/api/arbiter/disputes/{}/resolve", order_id))
         .json(&serde_json::json!({ "resolution": "seller" }))
@@ -543,18 +538,22 @@ fn test_escrow_dispute_resolved_to_seller() {
     assert_eq!(resolve_resp["status"].as_str(), Some("resolved"));
     assert_eq!(resolve_resp["resolution"].as_str(), Some("seller"));
 
-    // In current implementation, preimage is null because buyer didn't cooperate
+    // In escrow-holds-preimage model, preimage is available from escrow storage
+    let resolved_preimage = resolve_resp["preimage"]
+        .as_str()
+        .expect("Preimage should be available for seller resolution");
+    let buyer_preimage_no_prefix = buyer_preimage.strip_prefix("0x").unwrap_or(&buyer_preimage);
+    assert_eq!(resolved_preimage, buyer_preimage_no_prefix);
     println!(
-        "Dispute resolved to seller, preimage: {:?}",
-        resolve_resp["preimage"]
+        "Dispute resolved to seller, preimage: {}",
+        resolved_preimage
     );
 
-    println!("Test passed: Dispute resolved to seller (note: preimage may be null without buyer cooperation)");
+    println!("Test passed: Dispute resolved to seller with preimage from escrow");
 }
 
-/// Test timeout/expiry flow - in buyer-holds-preimage model, timeout without confirmation
-/// means buyer doesn't reveal preimage, so seller cannot settle. The order times out
-/// and this effectively favors the buyer (refund via invoice expiry).
+/// Test timeout/expiry flow - in escrow-holds-preimage model, timeout without confirmation
+/// means escrow auto-settles using stored preimage. This favors the seller who shipped.
 #[test]
 fn test_escrow_order_timeout() {
     let crate_dir = env!("CARGO_MANIFEST_DIR");
@@ -572,14 +571,14 @@ fn test_escrow_order_timeout() {
 
     let client = EscrowClient::new(&base_url);
 
-    let alice_id = get_user_id_by_username(&client, "alice");
-    let bob_id = get_user_id_by_username(&client, "bob");
+    let seller_id = get_user_id_by_username(&client, "seller");
+    let buyer_id = get_user_id_by_username(&client, "buyer");
 
-    let alice_client = EscrowClient::new(&base_url).with_user(&alice_id);
-    let bob_client = EscrowClient::new(&base_url).with_user(&bob_id);
+    let seller_client = EscrowClient::new(&base_url).with_user(&seller_id);
+    let buyer_client = EscrowClient::new(&base_url).with_user(&buyer_id);
 
-    // 1. Alice creates a product
-    let create_product_resp: serde_json::Value = alice_client
+    // 1. Seller creates a product
+    let create_product_resp: serde_json::Value = seller_client
         .post("/api/products")
         .json(&serde_json::json!({
             "title": "Timeout Widget",
@@ -593,14 +592,14 @@ fn test_escrow_order_timeout() {
 
     let product_id = create_product_resp["product_id"].as_str().unwrap();
 
-    // 2. Bob generates preimage and creates order
-    let (_bob_preimage, bob_payment_hash) = generate_preimage_and_hash();
+    // 2. Buyer generates preimage and creates order
+    let (buyer_preimage, _buyer_payment_hash) = generate_preimage_and_hash();
 
-    let create_order_resp: serde_json::Value = bob_client
+    let create_order_resp: serde_json::Value = buyer_client
         .post("/api/orders")
         .json(&serde_json::json!({
             "product_id": product_id,
-            "payment_hash": bob_payment_hash
+            "preimage": buyer_preimage
         }))
         .send()
         .unwrap()
@@ -614,9 +613,9 @@ fn test_escrow_order_timeout() {
         order_id, payment_hash
     );
 
-    // 3. Alice submits invoice
+    // 3. Seller submits invoice
     let invoice_string = format!("test_invoice_{}", payment_hash);
-    let _submit_invoice_resp: serde_json::Value = alice_client
+    let _submit_invoice_resp: serde_json::Value = seller_client
         .post(&format!("/api/orders/{}/invoice", order_id))
         .json(&serde_json::json!({
             "invoice": invoice_string
@@ -627,8 +626,8 @@ fn test_escrow_order_timeout() {
         .unwrap();
     println!("Invoice submitted");
 
-    // 4. Bob pays for the order
-    let _pay_resp: serde_json::Value = bob_client
+    // 4. Buyer pays for the order
+    let _pay_resp: serde_json::Value = buyer_client
         .post(&format!("/api/orders/{}/pay", order_id))
         .send()
         .unwrap()
@@ -636,8 +635,8 @@ fn test_escrow_order_timeout() {
         .unwrap();
     println!("Order funded");
 
-    // 5. Alice ships the order
-    let _ship_resp: serde_json::Value = alice_client
+    // 5. Seller ships the order
+    let _ship_resp: serde_json::Value = seller_client
         .post(&format!("/api/orders/{}/ship", order_id))
         .send()
         .unwrap()
@@ -659,8 +658,6 @@ fn test_escrow_order_timeout() {
     println!("Expired orders: {:?}", expired_orders);
 
     // The shipped order should have timed out
-    // In buyer-holds-preimage model, timeout auto-confirms (marks completed)
-    // but buyer never revealed preimage, so seller has NO preimage to settle
     assert!(
         expired_orders
             .iter()
@@ -669,34 +666,34 @@ fn test_escrow_order_timeout() {
     );
 
     // 7. Check order status
-    let alice_order_details: serde_json::Value = alice_client
+    let seller_order_details: serde_json::Value = seller_client
         .get(&format!("/api/orders/{}", order_id))
         .send()
         .unwrap()
         .json()
         .unwrap();
 
-    assert_eq!(alice_order_details["status"].as_str(), Some("completed"));
+    assert_eq!(seller_order_details["status"].as_str(), Some("completed"));
 
-    // In buyer-holds-preimage model, if buyer doesn't reveal preimage on timeout,
-    // seller cannot settle. The preimage field should be null.
-    let preimage_value = &alice_order_details["preimage"];
+    // In escrow-holds-preimage model, escrow stores preimage at order creation time.
+    // On timeout, escrow settles the invoice using the stored preimage.
+    let preimage_value = &seller_order_details["preimage"];
     println!(
         "Order timed out. Preimage available to seller: {:?}",
         preimage_value
     );
 
-    // Preimage is null because buyer never revealed it
-    assert!(
-        preimage_value.is_null(),
-        "Preimage should be null because buyer never confirmed/revealed it"
-    );
+    // Preimage should be available because escrow holds it from order creation
+    let seller_preimage = preimage_value
+        .as_str()
+        .expect("Preimage should be available after timeout completion");
+    let buyer_preimage_no_prefix = buyer_preimage.strip_prefix("0x").unwrap_or(&buyer_preimage);
+    assert_eq!(seller_preimage, buyer_preimage_no_prefix);
 
-    println!("Test passed: Order timeout flow - buyer didn't confirm, seller has no preimage");
+    println!("Test passed: Order timeout flow - escrow auto-settled with stored preimage");
 
-    // Note: In a real system with buyer-holds-preimage model, this timeout scenario
-    // effectively acts as a refund to buyer because:
-    // 1. Buyer's hold invoice on seller's node expires
-    // 2. Buyer's funds are automatically returned
-    // 3. Seller marked order as "completed" but cannot actually claim payment
+    // Note: In escrow-holds-preimage model, timeout scenario settles to seller because:
+    // 1. Escrow holds the preimage from order creation
+    // 2. On timeout (shipped but not confirmed), escrow auto-settles the invoice
+    // 3. Seller gets paid, buyer gets the shipped goods
 }

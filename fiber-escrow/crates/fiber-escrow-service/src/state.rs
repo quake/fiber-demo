@@ -10,9 +10,10 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<Mutex<AppStateInner>>,
-    /// Optional Fiber client for real payment integration
-    /// When None, the service operates in mock/test mode
-    fiber_client: Option<Arc<RpcFiberClient>>,
+    /// Fiber client for seller's node (creates invoices, settles payments)
+    seller_fiber_client: Option<Arc<RpcFiberClient>>,
+    /// Buyer's Fiber RPC URL (for sending payments)
+    buyer_fiber_rpc_url: Option<String>,
 }
 
 struct AppStateInner {
@@ -33,12 +34,16 @@ impl AppState {
                 orders: HashMap::new(),
                 current_time: None,
             })),
-            fiber_client: None,
+            seller_fiber_client: None,
+            buyer_fiber_rpc_url: None,
         }
     }
 
-    /// Create new state with Fiber client for real payments
-    pub fn with_fiber_client(fiber_client: Arc<RpcFiberClient>) -> Self {
+    /// Create new state with Fiber clients for real payments
+    pub fn with_fiber_clients(
+        seller_client: Option<Arc<RpcFiberClient>>,
+        buyer_rpc_url: Option<String>,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(AppStateInner {
                 users: HashMap::new(),
@@ -46,13 +51,19 @@ impl AppState {
                 orders: HashMap::new(),
                 current_time: None,
             })),
-            fiber_client: Some(fiber_client),
+            seller_fiber_client: seller_client,
+            buyer_fiber_rpc_url: buyer_rpc_url,
         }
     }
 
-    /// Get the Fiber client if configured
-    pub fn fiber_client(&self) -> Option<&Arc<RpcFiberClient>> {
-        self.fiber_client.as_ref()
+    /// Get the seller's Fiber client if configured
+    pub fn seller_fiber_client(&self) -> Option<&Arc<RpcFiberClient>> {
+        self.seller_fiber_client.as_ref()
+    }
+
+    /// Get buyer's Fiber RPC URL if configured
+    pub fn buyer_fiber_rpc_url(&self) -> Option<&str> {
+        self.buyer_fiber_rpc_url.as_deref()
     }
 
     /// Get current time (real or simulated)
@@ -139,20 +150,6 @@ impl AppState {
             .collect()
     }
 
-    pub fn mark_product_sold(&self, id: ProductId) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(product) = inner.products.get_mut(&id) {
-            product.status = ProductStatus::Sold;
-        }
-    }
-
-    pub fn mark_product_available(&self, id: ProductId) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(product) = inner.products.get_mut(&id) {
-            product.status = ProductStatus::Available;
-        }
-    }
-
     // Order operations
 
     pub fn create_order(
@@ -226,7 +223,14 @@ impl AppState {
     }
 
     /// Check for expired orders and auto-confirm them
-    pub fn process_expired_orders(&self) -> Vec<OrderId> {
+    /// Returns tuples of (OrderId, PaymentHash, Preimage) for settlement
+    pub fn process_expired_orders(
+        &self,
+    ) -> Vec<(
+        OrderId,
+        fiber_core::PaymentHash,
+        Option<fiber_core::Preimage>,
+    )> {
         let now = self.now();
         let mut expired = Vec::new();
 
@@ -235,7 +239,11 @@ impl AppState {
             // Only auto-confirm shipped orders that have expired
             if order.status == OrderStatus::Shipped && order.expires_at <= now {
                 order.status = OrderStatus::Completed;
-                expired.push(order.id);
+                expired.push((
+                    order.id,
+                    order.payment_hash.clone(),
+                    order.revealed_preimage.clone(),
+                ));
             }
         }
 
