@@ -17,6 +17,7 @@ CKB_CLI_VERSION="v2.0.0"
 CHANNEL_FUNDING_AMOUNT="0xba43b7400"  # 500 CKB = 50000000000 shannon
 CKB_RPC_URL="https://testnet.ckb.dev"
 FAUCET_URL="https://faucet.nervos.org"
+FAUCET_API_URL="https://faucet-api.nervos.org"
 MIN_CAPACITY=100000000000  # 1000 CKB in shannon
 
 # Node ports
@@ -193,8 +194,8 @@ ${password}
 EOF
 2>&1)
         
-        # Extract lock_arg from output
-        local lock_arg=$(echo "$output" | grep -oP 'lock_arg:\s+\K0x[a-fA-F0-9]+' | head -1)
+        # Extract lock_arg from output (macOS compatible)
+        local lock_arg=$(echo "$output" | sed -n 's/.*lock_arg:[[:space:]]*\(0x[a-fA-F0-9]*\).*/\1/p' | head -1)
         
         if [[ -z "$lock_arg" ]]; then
             log_error "Failed to create account for ${node_name}"
@@ -224,9 +225,9 @@ EOF
         rm -f "${ckb_dir}/exported-key"
     fi
     
-    # Get address using key-info
+    # Get address using key-info (macOS compatible)
     local key_info=$("${BIN_DIR}/ckb-cli" util key-info --privkey-path "${ckb_dir}/key" 2>&1)
-    local address=$(echo "$key_info" | grep -oP 'testnet:\s+\K\S+' | head -1)
+    local address=$(echo "$key_info" | sed -n 's/.*testnet:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -1)
     
     # Save address to file for reference
     echo "$address" > "${ckb_dir}/address"
@@ -241,9 +242,40 @@ EOF
 check_balance() {
     local address=$1
     local result=$("${BIN_DIR}/ckb-cli" --url "$CKB_RPC_URL" wallet get-capacity --address "$address" 2>&1)
-    # Extract total capacity in CKB (e.g., "1000.0")
-    local capacity=$(echo "$result" | grep -oP 'total:\s+\K[0-9.]+' | head -1)
+    # Extract total capacity in CKB (e.g., "1000.0") - macOS compatible
+    local capacity=$(echo "$result" | sed -n 's/.*total:[[:space:]]*\([0-9.]*\).*/\1/p' | head -1)
     echo "$capacity"
+}
+
+# Claim CKB from faucet API
+# Args: address, amount (10000, 100000, or 300000)
+claim_from_faucet() {
+    local address=$1
+    local amount=${2:-10000}
+    
+    local response=$(curl -s -X POST "${FAUCET_API_URL}/claim_events" \
+        -H "Content-Type: application/json" \
+        -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
+        -H "Origin: https://faucet.nervos.org" \
+        -H "Referer: https://faucet.nervos.org/" \
+        -d "{\"claim_event\": {\"address_hash\": \"${address}\", \"amount\": \"${amount}\"}}")
+    
+    # Check for rate limiting (Cloudflare error 1015)
+    if echo "$response" | grep -q "error code: 1015"; then
+        echo "error: rate limited, please try again later"
+    # Check if response contains error
+    elif echo "$response" | grep -q '"errors"'; then
+        local error=$(echo "$response" | sed -n 's/.*"errors":[[:space:]]*{[[:space:]]*"[^"]*":[[:space:]]*"\([^"]*\)".*/\1/p')
+        if [[ -n "$error" ]]; then
+            echo "error: $error"
+        else
+            echo "error: unknown"
+        fi
+    elif echo "$response" | grep -q '"data"'; then
+        echo "success"
+    else
+        echo "error: ${response:0:100}"
+    fi
 }
 
 # Wait for both accounts to have sufficient balance
@@ -251,28 +283,28 @@ wait_for_funding() {
     local nodeA_address=$(cat "${WORK_DIR}/nodeA/ckb/address")
     local nodeB_address=$(cat "${WORK_DIR}/nodeB/ckb/address")
     local min_ckb=1000
+    local claim_amount=10000  # Claim 10000 CKB per request
+    local balance_check_interval=10  # Check balance every 10 seconds
+    local claim_retry_interval=60    # Retry faucet claim every 60 seconds
+    local last_claim_time=0
     
     echo ""
     echo "=========================================="
-    echo "  Fund these addresses with CKB"
+    echo "  Auto-claiming CKB from Faucet"
     echo "=========================================="
     echo ""
-    echo -e "${YELLOW}Please fund each address with at least ${min_ckb} CKB from the faucet:${NC}"
-    echo -e "${BLUE}${FAUCET_URL}${NC}"
-    echo ""
-    echo -e "${GREEN}NodeA Address:${NC}"
-    echo "  $nodeA_address"
-    echo ""
-    echo -e "${GREEN}NodeB Address:${NC}"
-    echo "  $nodeB_address"
-    echo ""
-    echo "=========================================="
+    echo -e "${GREEN}NodeA Address:${NC} $nodeA_address"
+    echo -e "${GREEN}NodeB Address:${NC} $nodeB_address"
     echo ""
     
-    log_info "Checking balances (will auto-continue when both have >= ${min_ckb} CKB)..."
-    log_info "Note: Balance updates may take 1-2 minutes after faucet claim."
+    log_info "Waiting for balances (need >= ${min_ckb} CKB each)..."
+    log_info "Will auto-claim from faucet every ${claim_retry_interval}s if needed."
+    echo ""
     
     while true; do
+        local current_time=$(date +%s)
+        
+        # Check balances
         local balanceA=$(check_balance "$nodeA_address")
         local balanceB=$(check_balance "$nodeB_address")
         
@@ -288,13 +320,43 @@ wait_for_funding() {
         
         echo -ne "\r  NodeA: ${balanceA} CKB | NodeB: ${balanceB} CKB    "
         
+        # Check if both funded
         if [[ $intA -ge $min_ckb ]] && [[ $intB -ge $min_ckb ]]; then
             echo ""
             log_success "Both accounts funded!"
             return 0
         fi
         
-        sleep 3
+        # Try to claim if interval has passed and balance is insufficient
+        local time_since_claim=$((current_time - last_claim_time))
+        if [[ $time_since_claim -ge $claim_retry_interval ]]; then
+            echo ""
+            
+            if [[ $intA -lt $min_ckb ]]; then
+                log_info "Claiming ${claim_amount} CKB for NodeA..."
+                local resultA=$(claim_from_faucet "$nodeA_address" "$claim_amount")
+                if [[ "$resultA" == "success" ]]; then
+                    log_success "Faucet claim submitted for NodeA"
+                else
+                    log_warn "NodeA faucet: ${resultA#error: }"
+                fi
+            fi
+            
+            if [[ $intB -lt $min_ckb ]]; then
+                log_info "Claiming ${claim_amount} CKB for NodeB..."
+                local resultB=$(claim_from_faucet "$nodeB_address" "$claim_amount")
+                if [[ "$resultB" == "success" ]]; then
+                    log_success "Faucet claim submitted for NodeB"
+                else
+                    log_warn "NodeB faucet: ${resultB#error: }"
+                fi
+            fi
+            
+            last_claim_time=$current_time
+            echo ""
+        fi
+        
+        sleep $balance_check_interval
     done
 }
 
@@ -502,10 +564,10 @@ get_node_info() {
         }'
 }
 
-# Extract peer_id from node log file
+# Extract peer_id from node log file (macOS compatible)
 get_peer_id_from_log() {
     local node_dir=$1
-    grep -oP 'peer id PeerId\(\K[^)]+' "${node_dir}/fnn.log" | head -1
+    sed -n 's/.*peer id PeerId(\([^)]*\)).*/\1/p' "${node_dir}/fnn.log" | head -1
 }
 
 # Wait for channel to be ready

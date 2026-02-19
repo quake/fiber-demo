@@ -26,19 +26,51 @@ async fn main() {
         .init();
 
     // Check for Fiber RPC configuration
-    let state = if let Ok(fiber_rpc_url) = std::env::var("FIBER_SELLER_RPC_URL") {
-        tracing::info!("Fiber RPC enabled, connecting to: {}", fiber_rpc_url);
-        let fiber_client = Arc::new(fiber_core::RpcFiberClient::new(fiber_rpc_url));
-        AppState::with_fiber_client(fiber_client)
+    // Seller's node: creates invoices, checks payment status, settles/cancels
+    let seller_client = if let Ok(url) = std::env::var("FIBER_SELLER_RPC_URL") {
+        tracing::info!("Seller Fiber RPC enabled: {}", url);
+        Some(Arc::new(fiber_core::RpcFiberClient::new(url)))
     } else {
-        tracing::info!("Fiber RPC not configured (set FIBER_SELLER_RPC_URL to enable)");
-        AppState::new()
+        tracing::info!("Seller Fiber RPC not configured (set FIBER_SELLER_RPC_URL to enable)");
+        None
     };
 
-    // Pre-register some demo users
-    state.register_user("alice".to_string());
-    state.register_user("bob".to_string());
-    state.register_user("carol".to_string());
+    // Buyer's node: sends payments
+    let buyer_rpc_url = if let Ok(url) = std::env::var("FIBER_BUYER_RPC_URL") {
+        tracing::info!("Buyer Fiber RPC enabled: {}", url);
+        Some(url)
+    } else {
+        tracing::info!("Buyer Fiber RPC not configured (set FIBER_BUYER_RPC_URL to enable)");
+        None
+    };
+
+    let state = AppState::with_fiber_clients(seller_client, buyer_rpc_url);
+
+    // Pre-register demo users with role-based names
+    state.register_user("buyer".to_string());
+    let seller = state.register_user("seller".to_string());
+    state.register_user("arbiter".to_string());
+
+    // Pre-create demo products (hardcoded)
+    state.create_product(
+        seller.id,
+        "Digital Art NFT".to_string(),
+        "A unique piece of digital artwork, delivered as high-resolution PNG.".to_string(),
+        1000,
+    );
+    state.create_product(
+        seller.id,
+        "E-book: Rust Programming".to_string(),
+        "Comprehensive guide to Rust programming language, PDF format.".to_string(),
+        500,
+    );
+    state.create_product(
+        seller.id,
+        "Music Album (MP3)".to_string(),
+        "Original electronic music album, 10 tracks in MP3 format.".to_string(),
+        800,
+    );
+    tracing::info!("Created 3 demo products for seller");
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -68,6 +100,8 @@ async fn main() {
         .route("/api/arbiter/disputes/:id/resolve", post(resolve_dispute))
         // System
         .route("/api/system/tick", post(tick))
+        // Fiber RPC Proxy (for browser to call buyer's node)
+        .route("/api/fiber/send_payment", post(send_payment_proxy))
         // Health
         .route("/api/health", get(health))
         // Static files

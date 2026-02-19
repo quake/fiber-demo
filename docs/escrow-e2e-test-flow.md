@@ -1,94 +1,159 @@
 # Fiber Escrow E2E Test Flow
 
-Manual end-to-end test scenarios for the Fiber Escrow demo.
+Manual end-to-end test scenarios for the Fiber Escrow demo with real Fiber Network integration.
 
 ## Prerequisites
 
+### Mock Mode (No Fiber Nodes)
+
+For quick testing without Fiber nodes:
+
 ```bash
-cd fiber-escrow && cargo run
+cd fiber-escrow/crates/fiber-escrow-service && cargo run
 # Service running at http://localhost:3000
+# Operates in "trust mode" - payments are simulated
 ```
+
+### Real Fiber Mode (With Fiber Nodes)
+
+For testing with real Fiber Network payments:
+
+```bash
+# Terminal 1: Start Fiber testnet nodes
+./scripts/setup-fiber-testnet.sh
+
+# Terminal 2: Start escrow service connected to seller's node (NodeA)
+cd fiber-escrow/crates/fiber-escrow-service
+FIBER_SELLER_RPC_URL=http://localhost:8227 cargo run
+```
+
+The Web UI will show a "Your Fiber Node" input field for buyers to enter their node's RPC URL (default: `http://localhost:8229` for NodeB).
+
+## Architecture Overview
+
+```
+┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+│   Buyer's    │         │    Escrow    │         │   Seller's   │
+│  Fiber Node  │         │   Service    │         │  Fiber Node  │
+│  (NodeB)     │         │              │         │  (NodeA)     │
+└──────┬───────┘         └──────┬───────┘         └──────┬───────┘
+       │                        │                        │
+       │  1. Create order       │  2. Create hold invoice│
+       │  (buyer submits        │  ─────────────────────>│
+       │   preimage)            │                        │
+       │                        │<───── invoice_string ──│
+       │                        │                        │
+       │  3. send_payment       │                        │
+       │  ────────────────────────────────────────────> │
+       │  (buyer pays directly from UI)                  │
+       │                        │                        │
+       │  4. Verify payment     │  5. get_invoice status │
+       │  ─────────────────────>│  ─────────────────────>│
+       │                        │<───── status: Held ────│
+       │                        │                        │
+       │                        │  6. settle_invoice     │
+       │                        │  (on confirm/timeout)  │
+       │                        │  ─────────────────────>│
+```
+
+**Key Points:**
+- Escrow only connects to **seller's node** (`FIBER_SELLER_RPC_URL`)
+- Buyer enters their own node's RPC URL in the Web UI
+- Buyer's browser calls their node directly via JSON-RPC `send_payment`
+- Escrow holds the preimage and uses it to settle/cancel invoices
 
 ## Test Scenarios
 
 ---
 
-### Scenario 1: Happy Path (Normal Purchase)
+### Scenario 1: Happy Path (Real Fiber Payment)
 
-**Goal**: Verify complete purchase flow from listing to payment completion.
+**Goal**: Complete purchase flow with actual Fiber Network hold invoice.
+
+#### Prerequisites
+- Both Fiber nodes running with funded channel
+- Escrow service started with `FIBER_SELLER_RPC_URL=http://localhost:8227`
 
 #### Steps
 
 | Step | User | Action | Expected Result |
 |------|------|--------|-----------------|
-| 1 | bob | Create product "Test Item" (500 sats) | Product appears in market |
-| 2 | alice | Browse market, click "Buy" on Test Item | Order created, status: `waiting_payment` |
-| 3 | alice | Click "Pay" on the order | Status: `funded`, alice balance -500 |
-| 4 | bob | Go to "My Products", click "Ship" | Status: `shipped` |
-| 5 | alice | Go to "My Orders", click "Confirm" | Status: `completed` |
-| 6 | - | Check balances | alice: 9500, bob: 10500 |
+| 1 | - | Open http://localhost:3000 | Web UI loads |
+| 2 | - | Configure "Your Fiber Node" RPC URL | Set to `http://localhost:8229` (buyer's node) |
+| 3 | bob | Switch to "bob", go to "My Products" | Products tab visible |
+| 4 | bob | Create product "Test Item" (500 sats) | Product appears in market |
+| 5 | alice | Switch to "alice", browse Market | "Test Item" visible |
+| 6 | alice | Click "Buy Now" on Test Item | Order created with invoice, status: `waiting_payment` |
+| 7 | alice | Go to "My Orders", click "Pay Now" | Browser calls buyer's node `send_payment`, then escrow verifies. Status: `funded` |
+| 8 | bob | Switch to "bob", go to "My Orders" | See order as seller |
+| 9 | bob | Click "Mark Shipped" | Status: `shipped` |
+| 10 | alice | Switch to "alice", click "Confirm Receipt" | Escrow settles invoice. Status: `completed` |
 
 #### Verification
 
-```bash
-# Check alice balance
-curl -H "X-User-Id: <alice-uuid>" http://localhost:3000/api/user/me
+Check that the hold invoice was actually settled:
 
-# Check bob balance  
-curl -H "X-User-Id: <bob-uuid>" http://localhost:3000/api/user/me
+```bash
+# Query seller's node for invoice status
+curl -X POST http://localhost:8227 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"get_invoice","params":{"payment_hash":"<hash>"}}'
+# Expected: status: "paid"
 ```
 
 ---
 
-### Scenario 2: Dispute - Refund to Buyer
+### Scenario 2: Dispute - Refund to Buyer (Invoice Cancelled)
 
-**Goal**: Verify dispute resolution in favor of buyer.
+**Goal**: Verify dispute resolution cancels the hold invoice and refunds buyer.
 
 #### Steps
 
 | Step | User | Action | Expected Result |
 |------|------|--------|-----------------|
-| 1 | carol | Create product "Disputed Item" (1000 sats) | Product appears in market |
-| 2 | alice | Buy and pay for the item | Status: `funded` |
+| 1 | carol | Create product "Disputed Item" (1000 sats) | Product in market |
+| 2 | alice | Buy and pay for the item | Invoice created on seller's node, status: `funded` |
 | 3 | carol | Ship the item | Status: `shipped` |
 | 4 | alice | Click "Dispute", reason: "Item not received" | Status: `disputed` |
-| 5 | arbiter | Go to "Arbiter" tab, see dispute | Dispute visible with reason |
-| 6 | arbiter | Click "Refund Buyer" | Status: `refunded` |
-| 7 | - | Check balances | alice: unchanged, carol: unchanged |
+| 5 | (arbiter) | Go to "Arbiter" tab | Dispute visible with reason |
+| 6 | (arbiter) | Click "Refund Buyer" | Escrow calls `cancel_invoice`. Status: `refunded` |
 
 #### Verification
 
-- Alice's balance should return to original (refund)
-- Carol's balance unchanged (never received payment)
-- Order status is `refunded`
+```bash
+# Check invoice was cancelled
+curl -X POST http://localhost:8227 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"get_invoice","params":{"payment_hash":"<hash>"}}'
+# Expected: status: "cancelled"
+```
 
 ---
 
-### Scenario 3: Dispute - Pay Seller
+### Scenario 3: Dispute - Pay Seller (Invoice Settled)
 
-**Goal**: Verify dispute resolution in favor of seller.
+**Goal**: Verify dispute resolution in seller's favor settles the invoice.
 
 #### Steps
 
 | Step | User | Action | Expected Result |
 |------|------|--------|-----------------|
-| 1 | bob | Create product "Another Item" (750 sats) | Product appears in market |
-| 2 | alice | Buy and pay for the item | Status: `funded` |
-| 3 | bob | Ship the item | Status: `shipped` |
-| 4 | alice | Click "Dispute", reason: "Wrong color" | Status: `disputed` |
-| 5 | arbiter | Go to "Arbiter" tab, click "Pay Seller" | Status: `completed` |
-| 6 | - | Check balances | alice: -750, bob: +750 |
+| 1 | bob | Create product "Another Item" (750 sats) | Product in market |
+| 2 | alice | Buy and pay | Status: `funded` |
+| 3 | bob | Ship | Status: `shipped` |
+| 4 | alice | Dispute with reason "Wrong color" | Status: `disputed` |
+| 5 | (arbiter) | Click "Release to Seller" | Escrow settles invoice with stored preimage. Status: `completed` |
 
 #### Verification
 
-- Dispute resolved in seller's favor
-- Payment completed despite dispute
+- Invoice status on seller's node: `paid`
+- Response includes revealed `preimage`
 
 ---
 
 ### Scenario 4: Timeout Auto-Completion
 
-**Goal**: Verify automatic completion when buyer doesn't respond.
+**Goal**: Verify automatic settlement when buyer doesn't respond.
 
 #### Steps
 
@@ -96,146 +161,145 @@ curl -H "X-User-Id: <bob-uuid>" http://localhost:3000/api/user/me
 |------|------|--------|-----------------|
 | 1 | bob | Create product "Timeout Test" (300 sats) | Product in market |
 | 2 | alice | Buy and pay | Status: `funded` |
-| 3 | bob | Ship the item | Status: `shipped` |
-| 4 | - | Do NOT confirm (simulate buyer gone) | Status remains `shipped` |
-| 5 | - | Simulate time passage (API call below) | Order auto-completes |
-| 6 | - | Check balances | alice: -300, bob: +300 |
+| 3 | bob | Ship | Status: `shipped` |
+| 4 | - | (Do NOT confirm - simulate buyer gone) | Status remains `shipped` |
+| 5 | - | Advance time via Arbiter tab or API | Order auto-completes, invoice settled |
 
-#### Time Simulation
+#### Time Simulation (Web UI)
+
+Go to "Arbiter" tab and click "+1 day" or "+1 week" buttons.
+
+#### Time Simulation (API)
 
 ```bash
-# Simulate 24 hours passing (default timeout)
+# Simulate 7 days passing
 curl -X POST http://localhost:3000/api/system/tick \
   -H "Content-Type: application/json" \
-  -d '{"seconds": 86400}'
+  -d '{"seconds": 604800}'
 ```
 
 #### Verification
 
-- Order status changed to `completed` automatically
-- Seller received payment without buyer confirmation
+- Order status: `completed`
+- Invoice settled automatically using escrow-held preimage
 
 ---
 
-### Scenario 5: Multiple Concurrent Orders
+### Scenario 5: Payment Verification Failure
 
-**Goal**: Verify system handles multiple orders correctly.
+**Goal**: Verify escrow correctly rejects unverified payments.
 
 #### Steps
 
 | Step | User | Action | Expected Result |
 |------|------|--------|-----------------|
-| 1 | bob | Create 3 products (100, 200, 300 sats) | 3 products in market |
-| 2 | alice | Buy all 3 products | 3 orders created |
-| 3 | alice | Pay for all 3 | All status: `funded` |
-| 4 | bob | Ship all 3 | All status: `shipped` |
-| 5 | alice | Confirm order 1, dispute order 2, ignore order 3 | Mixed statuses |
-| 6 | arbiter | Refund order 2 | Order 2: `refunded` |
-| 7 | - | Tick time by 24h | Order 3: auto-completed |
-
-#### Final State
-
-- Order 1: `completed` (manual confirm)
-- Order 2: `refunded` (dispute resolved)
-- Order 3: `completed` (timeout)
-- alice: -400 (100 + 300, refunded 200)
-- bob: +400
+| 1 | bob | Create product | Product in market |
+| 2 | alice | Buy (creates invoice) | Status: `waiting_payment` |
+| 3 | alice | Click "Pay Now" WITHOUT actually sending payment | Error: "Payment not received" |
+| 4 | alice | Enter wrong Fiber RPC URL, click "Pay Now" | Error: network/RPC error |
 
 ---
 
-### Scenario 6: Edge Cases
+## CORS Considerations
 
-#### 6a: Buy Own Product
+When the browser calls the buyer's Fiber node directly, CORS restrictions may apply.
 
-| Step | User | Action | Expected Result |
-|------|------|--------|-----------------|
-| 1 | alice | Create a product | Product created |
-| 2 | alice | Try to buy own product | Error: "Cannot buy own product" |
+**Solutions:**
 
-#### 6b: Double Payment
+1. **Fiber node CORS config**: If supported, enable CORS in the Fiber node configuration
+2. **Browser extension**: Use a CORS-disabling extension for testing
+3. **Local proxy**: Run a simple proxy that adds CORS headers
 
-| Step | User | Action | Expected Result |
-|------|------|--------|-----------------|
-| 1 | - | Create and buy a product | Order: `waiting_payment` |
-| 2 | - | Pay for the order | Order: `funded` |
-| 3 | - | Try to pay again | Error: "Order already paid" |
-
-#### 6c: Confirm Before Ship
-
-| Step | User | Action | Expected Result |
-|------|------|--------|-----------------|
-| 1 | - | Create, buy, and pay | Order: `funded` |
-| 2 | buyer | Try to confirm | Error: "Order not shipped" |
-
-#### 6d: Ship as Buyer
-
-| Step | User | Action | Expected Result |
-|------|------|--------|-----------------|
-| 1 | - | Create, buy, and pay | Order: `funded` |
-| 2 | buyer | Try to ship | Error: "Not the seller" |
+Example nginx proxy config:
+```nginx
+server {
+    listen 8230;
+    location / {
+        proxy_pass http://localhost:8229;
+        add_header 'Access-Control-Allow-Origin' '*';
+        add_header 'Access-Control-Allow-Methods' 'POST, OPTIONS';
+        add_header 'Access-Control-Allow-Headers' 'Content-Type';
+    }
+}
+```
 
 ---
 
 ## API Quick Reference
 
-### Get User ID
-
-Users are pre-registered on startup. Get their IDs:
+### Create Order (with preimage)
 
 ```bash
-# Register returns user_id, or use existing demo users
-curl http://localhost:3000/api/products
-# Response includes seller_id for each product
-```
+# Generate preimage (32 bytes hex)
+PREIMAGE="0x$(openssl rand -hex 32)"
 
-### Common Headers
-
-```bash
-# All authenticated endpoints need X-User-Id header
--H "X-User-Id: <uuid>"
-```
-
-### Full API Test
-
-```bash
-# 1. List products
-curl http://localhost:3000/api/products
-
-# 2. Create product (as bob)
-curl -X POST http://localhost:3000/api/products \
-  -H "X-User-Id: <bob-uuid>" \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Test", "description": "A test item", "price_sat": 100}'
-
-# 3. Create order (as alice)
+# Create order
 curl -X POST http://localhost:3000/api/orders \
   -H "X-User-Id: <alice-uuid>" \
   -H "Content-Type: application/json" \
-  -d '{"product_id": "<product-uuid>"}'
+  -d "{\"product_id\": \"<product-uuid>\", \"preimage\": \"$PREIMAGE\"}"
+```
 
-# 4. Pay order
+Response includes:
+- `order_id`
+- `payment_hash` (SHA256 of preimage)
+- `invoice_string` (Fiber hold invoice to pay)
+
+### Get Order Details
+
+```bash
+curl http://localhost:3000/api/orders/<order-uuid> \
+  -H "X-User-Id: <alice-uuid>"
+```
+
+### Pay Invoice (via buyer's Fiber node)
+
+```bash
+curl -X POST http://localhost:8229 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "send_payment",
+    "params": {"invoice": "<invoice_string>"}
+  }'
+```
+
+### Verify Payment with Escrow
+
+```bash
 curl -X POST http://localhost:3000/api/orders/<order-uuid>/pay \
   -H "X-User-Id: <alice-uuid>"
+```
 
-# 5. Ship order (as bob)
-curl -X POST http://localhost:3000/api/orders/<order-uuid>/ship \
-  -H "X-User-Id: <bob-uuid>"
+This polls the seller's node for invoice status (up to 30 seconds).
 
-# 6. Confirm order (as alice)
+### Confirm Order (settles invoice)
+
+```bash
 curl -X POST http://localhost:3000/api/orders/<order-uuid>/confirm \
-  -H "X-User-Id: <alice-uuid>"
+  -H "X-User-Id: <alice-uuid>" \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
 ---
 
 ## Checklist
 
+### Mock Mode Testing
 - [ ] Scenario 1: Happy path works
 - [ ] Scenario 2: Dispute refund works
 - [ ] Scenario 3: Dispute pay seller works
 - [ ] Scenario 4: Timeout auto-completion works
-- [ ] Scenario 5: Multiple concurrent orders work
-- [ ] Scenario 6a: Cannot buy own product
-- [ ] Scenario 6b: Cannot double-pay
-- [ ] Scenario 6c: Cannot confirm before ship
-- [ ] Scenario 6d: Cannot ship as buyer
+
+### Real Fiber Mode Testing
+- [ ] Fiber nodes started and channel funded
+- [ ] Escrow service connected to seller's node
+- [ ] Web UI can reach buyer's node (CORS resolved)
+- [ ] Hold invoice created on seller's node
+- [ ] Payment sent from buyer's node
+- [ ] Payment status verified (Held)
+- [ ] Invoice settled on confirm
+- [ ] Invoice cancelled on refund
+- [ ] Auto-settlement on timeout
