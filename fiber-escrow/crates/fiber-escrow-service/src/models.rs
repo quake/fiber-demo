@@ -58,7 +58,6 @@ impl Default for OrderId {
 pub struct User {
     pub id: UserId,
     pub username: String,
-    pub balance_sat: i64,
 }
 
 impl User {
@@ -66,7 +65,6 @@ impl User {
         Self {
             id: UserId::new(),
             username,
-            balance_sat: 10000, // Initial balance for demo
         }
     }
 }
@@ -143,10 +141,13 @@ pub struct Order {
     pub buyer_id: UserId,
     pub amount_sat: u64,
 
-    // Arbiter holds preimage
-    #[serde(skip_serializing)]
-    pub preimage: Preimage,
+    // Payment hash provided by buyer (hash of buyer's preimage)
     pub payment_hash: PaymentHash,
+    /// Hold invoice string from Fiber RPC
+    pub invoice_string: Option<String>,
+    /// Preimage revealed by buyer when confirming receipt
+    #[serde(skip_serializing)]
+    pub revealed_preimage: Option<Preimage>,
 
     // State
     pub status: OrderStatus,
@@ -158,11 +159,13 @@ pub struct Order {
 }
 
 impl Order {
-    /// Create a new order with arbiter-generated preimage
-    pub fn new(product: &Product, buyer_id: UserId, timeout_hours: i64) -> Self {
-        let preimage = Preimage::random();
-        let payment_hash = preimage.payment_hash();
-
+    /// Create a new order with buyer-provided payment_hash
+    pub fn new(
+        product: &Product,
+        buyer_id: UserId,
+        payment_hash: PaymentHash,
+        timeout_hours: i64,
+    ) -> Self {
         Self {
             id: OrderId::new(),
             product_id: product.id,
@@ -170,8 +173,9 @@ impl Order {
             seller_id: product.seller_id,
             buyer_id,
             amount_sat: product.price_sat,
-            preimage,
             payment_hash,
+            invoice_string: None,
+            revealed_preimage: None,
             status: OrderStatus::WaitingPayment,
             created_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::hours(timeout_hours),

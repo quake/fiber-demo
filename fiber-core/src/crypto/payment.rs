@@ -22,9 +22,26 @@ impl Preimage {
         Self(bytes)
     }
 
+    /// Parse from hex string (with or without 0x prefix)
+    pub fn from_hex(s: &str) -> Result<Self, hex::FromHexError> {
+        let s = s.strip_prefix("0x").unwrap_or(s);
+        let bytes = hex::decode(s)?;
+        if bytes.len() != 32 {
+            return Err(hex::FromHexError::InvalidStringLength);
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(Self(arr))
+    }
+
     /// Get the underlying bytes
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    /// Convert to hex string (with 0x prefix for Fiber RPC)
+    pub fn to_hex(&self) -> String {
+        format!("0x{}", hex::encode(&self.0))
     }
 
     /// Compute the payment hash (SHA256 of preimage)
@@ -52,9 +69,26 @@ impl PaymentHash {
         Self(bytes)
     }
 
+    /// Parse from hex string (with or without 0x prefix)
+    pub fn from_hex(s: &str) -> Result<Self, hex::FromHexError> {
+        let s = s.strip_prefix("0x").unwrap_or(s);
+        let bytes = hex::decode(s)?;
+        if bytes.len() != 32 {
+            return Err(hex::FromHexError::InvalidStringLength);
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(Self(arr))
+    }
+
     /// Get the underlying bytes
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    /// Convert to hex string (with 0x prefix for Fiber RPC)
+    pub fn to_hex(&self) -> String {
+        format!("0x{}", hex::encode(&self.0))
     }
 
     /// Verify that a preimage matches this hash

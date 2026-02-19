@@ -11,6 +11,7 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -24,7 +25,15 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let state = AppState::new();
+    // Check for Fiber RPC configuration
+    let state = if let Ok(fiber_rpc_url) = std::env::var("FIBER_SELLER_RPC_URL") {
+        tracing::info!("Fiber RPC enabled, connecting to: {}", fiber_rpc_url);
+        let fiber_client = Arc::new(fiber_core::RpcFiberClient::new(fiber_rpc_url));
+        AppState::with_fiber_client(fiber_client)
+    } else {
+        tracing::info!("Fiber RPC not configured (set FIBER_SELLER_RPC_URL to enable)");
+        AppState::new()
+    };
 
     // Pre-register some demo users
     state.register_user("alice".to_string());
@@ -48,6 +57,8 @@ async fn main() {
         // Orders
         .route("/api/orders", post(create_order))
         .route("/api/orders/mine", get(list_my_orders))
+        .route("/api/orders/:id", get(get_order))
+        .route("/api/orders/:id/invoice", post(submit_invoice))
         .route("/api/orders/:id/pay", post(pay_order))
         .route("/api/orders/:id/ship", post(ship_order))
         .route("/api/orders/:id/confirm", post(confirm_order))

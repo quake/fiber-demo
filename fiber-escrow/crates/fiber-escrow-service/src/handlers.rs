@@ -6,6 +6,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use fiber_core::FiberClient;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -23,7 +24,6 @@ pub struct RegisterRequest {
 pub struct UserResponse {
     pub id: Uuid,
     pub username: String,
-    pub balance_sat: i64,
 }
 
 impl From<User> for UserResponse {
@@ -31,7 +31,6 @@ impl From<User> for UserResponse {
         Self {
             id: u.id.0,
             username: u.username,
-            balance_sat: u.balance_sat,
         }
     }
 }
@@ -57,6 +56,14 @@ pub struct ProductResponse {
 #[derive(Deserialize)]
 pub struct CreateOrderRequest {
     pub product_id: Uuid,
+    /// Payment hash (hex string with 0x prefix) - buyer generates this from their preimage
+    pub payment_hash: String,
+}
+
+#[derive(Deserialize)]
+pub struct SubmitInvoiceRequest {
+    /// Hold invoice string created by seller
+    pub invoice: String,
 }
 
 #[derive(Serialize)]
@@ -68,6 +75,7 @@ pub struct OrderResponse {
     pub buyer_id: Uuid,
     pub amount_sat: u64,
     pub payment_hash: String,
+    pub invoice_string: Option<String>,
     pub status: OrderStatus,
     pub created_at: String,
     pub expires_at: String,
@@ -84,6 +92,12 @@ pub struct DisputeResponse {
 #[derive(Deserialize)]
 pub struct DisputeRequest {
     pub reason: String,
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmOrderRequest {
+    /// Preimage (hex string with 0x prefix) - revealed by buyer to confirm receipt
+    pub preimage: String,
 }
 
 #[derive(Deserialize)]
@@ -251,6 +265,7 @@ fn order_to_response(order: &Order) -> OrderResponse {
         buyer_id: order.buyer_id.0,
         amount_sat: order.amount_sat,
         payment_hash: order.payment_hash.to_string(),
+        invoice_string: order.invoice_string.clone(),
         status: order.status,
         created_at: order.created_at.to_rfc3339(),
         expires_at: order.expires_at.to_rfc3339(),
@@ -273,6 +288,17 @@ pub async fn create_order(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "Missing X-User-Id header"})),
+            )
+        }
+    };
+
+    // Parse payment_hash from hex
+    let payment_hash = match fiber_core::PaymentHash::from_hex(&req.payment_hash) {
+        Ok(h) => h,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid payment_hash format, expected hex string"})),
             )
         }
     };
@@ -305,8 +331,36 @@ pub async fn create_order(
     // Mark product as sold
     state.mark_product_sold(product_id);
 
-    // Create order
-    let order = state.create_order(&product, buyer_id);
+    // Create order with buyer's payment_hash
+    let order = state.create_order(&product, buyer_id, payment_hash.clone());
+
+    // If Fiber client is configured, create hold invoice on seller's node
+    let invoice_string = if let Some(fiber_client) = state.fiber_client() {
+        match fiber_client
+            .create_hold_invoice(&payment_hash, order.amount_sat, 24 * 60 * 60) // 24 hour expiry
+            .await
+        {
+            Ok(invoice) => {
+                // Store invoice string in order
+                state.set_order_invoice(order.id, invoice.invoice_string.clone());
+                Some(invoice.invoice_string)
+            }
+            Err(e) => {
+                // Rollback: mark product available again
+                state.mark_product_available(product_id);
+                // TODO: Also need to delete the order from state
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("Failed to create hold invoice: {}", e)
+                    })),
+                );
+            }
+        }
+    } else {
+        // No Fiber client - mock mode, no invoice created
+        None
+    };
 
     (
         StatusCode::OK,
@@ -314,7 +368,8 @@ pub async fn create_order(
             "order_id": order.id.0,
             "payment_hash": order.payment_hash.to_string(),
             "amount_sat": order.amount_sat,
-            "expires_at": order.expires_at.to_rfc3339()
+            "expires_at": order.expires_at.to_rfc3339(),
+            "invoice_string": invoice_string
         })),
     )
 }
@@ -339,6 +394,111 @@ pub async fn list_my_orders(
         .map(order_to_response)
         .collect();
     (StatusCode::OK, Json(serde_json::json!({"orders": orders})))
+}
+
+pub async fn get_order(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(order_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user_id = match get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Missing X-User-Id header"})),
+            )
+        }
+    };
+
+    let order_id = OrderId(order_id);
+    let order = match state.get_order(order_id) {
+        Some(o) => o,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Order not found"})),
+            )
+        }
+    };
+
+    // Only buyer or seller can view order details
+    if order.buyer_id != user_id && order.seller_id != user_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Not authorized to view this order"})),
+        );
+    }
+
+    // Include preimage for seller if order is completed
+    let mut response = serde_json::json!(order_to_response(&order));
+    
+    if order.seller_id == user_id && order.status == OrderStatus::Completed {
+        if let Some(preimage) = state.get_revealed_preimage(order_id) {
+            response["preimage"] = serde_json::json!(hex::encode(preimage.as_bytes()));
+        }
+    }
+
+    (StatusCode::OK, Json(response))
+}
+
+pub async fn submit_invoice(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(order_id): Path<Uuid>,
+    Json(req): Json<SubmitInvoiceRequest>,
+) -> impl IntoResponse {
+    let user_id = match get_user_id_from_header(&headers) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Missing X-User-Id header"})),
+            )
+        }
+    };
+
+    let order_id = OrderId(order_id);
+    let order = match state.get_order(order_id) {
+        Some(o) => o,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Order not found"})),
+            )
+        }
+    };
+
+    // Only seller can submit invoice
+    if order.seller_id != user_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "Only seller can submit invoice"})),
+        );
+    }
+
+    // Can only submit invoice for orders waiting payment
+    if order.status != OrderStatus::WaitingPayment {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Order not in WaitingPayment status"})),
+        );
+    }
+
+    // Validate invoice is not empty
+    if req.invoice.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invoice cannot be empty"})),
+        );
+    }
+
+    state.set_order_invoice(order_id, req.invoice);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"status": "invoice_submitted"})),
+    )
 }
 
 pub async fn pay_order(
@@ -381,17 +541,15 @@ pub async fn pay_order(
         );
     }
 
-    // Check buyer balance
-    let buyer = state.get_user(user_id).unwrap();
-    if buyer.balance_sat < order.amount_sat as i64 {
+    // Require invoice to be submitted before payment can be marked
+    if order.invoice_string.is_none() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Insufficient balance"})),
+            Json(serde_json::json!({"error": "Seller has not submitted invoice yet"})),
         );
     }
 
-    // Lock buyer funds (simulated hold invoice)
-    state.adjust_balance(user_id, -(order.amount_sat as i64));
+    // Trust-based: buyer notifies that payment was made to seller's hold invoice
     state.update_order_status(order_id, OrderStatus::Funded);
 
     (
@@ -452,6 +610,7 @@ pub async fn confirm_order(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(order_id): Path<Uuid>,
+    Json(req): Json<ConfirmOrderRequest>,
 ) -> impl IntoResponse {
     let user_id = match get_user_id_from_header(&headers) {
         Some(id) => id,
@@ -459,6 +618,17 @@ pub async fn confirm_order(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "Missing X-User-Id header"})),
+            )
+        }
+    };
+
+    // Parse preimage from hex
+    let preimage = match fiber_core::Preimage::from_hex(&req.preimage) {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid preimage format, expected hex string"})),
             )
         }
     };
@@ -488,18 +658,39 @@ pub async fn confirm_order(
         );
     }
 
-    // Release funds to seller
-    state.adjust_balance(order.seller_id, order.amount_sat as i64);
+    // Verify preimage matches payment_hash
+    if !order.payment_hash.verify(&preimage) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Preimage does not match payment_hash"})),
+        );
+    }
+
+    // Store revealed preimage and mark order as completed
+    state.set_revealed_preimage(order_id, preimage.clone());
     state.update_order_status(order_id, OrderStatus::Completed);
 
-    // Get preimage for response
-    let preimage = state.get_order_preimage(order_id);
+    // If Fiber client is configured, settle the hold invoice on seller's node
+    if let Some(fiber_client) = state.fiber_client() {
+        if let Err(e) = fiber_client
+            .settle_invoice(&order.payment_hash, &preimage)
+            .await
+        {
+            // Log but don't fail - order is already confirmed locally
+            // The settlement can be retried or handled manually
+            tracing::error!(
+                "Failed to settle invoice for order {}: {}. Manual settlement may be required.",
+                order_id.0,
+                e
+            );
+        }
+    }
 
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "status": "completed",
-            "preimage": preimage.map(|p| hex::encode(p.as_bytes()))
+            "preimage": hex::encode(preimage.as_bytes())
         })),
     )
 }
@@ -599,25 +790,31 @@ pub async fn resolve_dispute(
         }
     };
 
-    // Process resolution
-    match resolution {
+    // For seller resolution, the revealed preimage (if any) allows seller to settle
+    // For buyer resolution, buyer's payment auto-expires (no preimage revealed)
+    let preimage = match resolution {
         DisputeResolution::ToSeller => {
-            // Release funds to seller
-            state.adjust_balance(order.seller_id, order.amount_sat as i64);
+            // Arbiter needs preimage to resolve to seller
+            // In buyer-holds-preimage model, arbiter might need buyer to reveal it
+            // or use a different mechanism. For now, return revealed preimage if available.
+            state.get_revealed_preimage(order_id).map(|p| hex::encode(p.as_bytes()))
         }
         DisputeResolution::ToBuyer => {
-            // Refund buyer
-            state.adjust_balance(order.buyer_id, order.amount_sat as i64);
-            // Mark product as available again
+            // Mark product as available again for buyer refund case
             state.mark_product_available(order.product_id);
+            None
         }
-    }
+    };
 
     state.resolve_dispute(order_id, resolution);
 
     (
         StatusCode::OK,
-        Json(serde_json::json!({"status": "resolved", "resolution": req.resolution})),
+        Json(serde_json::json!({
+            "status": "resolved",
+            "resolution": req.resolution,
+            "preimage": preimage
+        })),
     )
 }
 
@@ -626,15 +823,11 @@ pub async fn resolve_dispute(
 pub async fn tick(State(state): State<AppState>, Json(req): Json<TickRequest>) -> impl IntoResponse {
     state.advance_time(req.seconds);
 
-    // Process expired orders
+    // Process expired orders (auto-confirm shipped orders)
     let expired_order_ids = state.process_expired_orders();
 
-    // Release funds for expired orders
-    for order_id in &expired_order_ids {
-        if let Some(order) = state.get_order(*order_id) {
-            state.adjust_balance(order.seller_id, order.amount_sat as i64);
-        }
-    }
+    // Note: For expired orders, preimage is now available for seller to claim
+    // Seller should query the order to get preimage for settlement
 
     let expired: Vec<Uuid> = expired_order_ids.iter().map(|id| id.0).collect();
     Json(serde_json::json!(TickResponse { expired_orders: expired }))
