@@ -83,6 +83,52 @@ cargo clippy --all-targets --all-features
 cargo fmt --check
 ```
 
+### Fiber Testnet Setup
+
+The `scripts/setup-fiber-testnet.sh` script automates setting up two local Fiber nodes connected to the testnet:
+
+```bash
+# First run - downloads binaries, creates accounts, starts nodes, opens channels
+./scripts/setup-fiber-testnet.sh
+
+# Check channel status
+./scripts/setup-fiber-testnet.sh status
+
+# Stop running nodes
+./scripts/setup-fiber-testnet.sh stop
+```
+
+**What the script does:**
+1. Downloads `fnn` (Fiber Node) v0.7.0 and `ckb-cli` v2.0.0
+2. Creates two CKB accounts using ckb-cli
+3. Displays addresses for funding via [CKB Faucet](https://faucet.nervos.org)
+4. Starts two local Fiber nodes (NodeA on port 8227, NodeB on port 8229)
+5. Connects both nodes to testnet public node1
+6. Opens 500 CKB channels with node1
+
+**Requirements:**
+- `curl`, `tar`, `unzip` (for binary downloads)
+- `jq` (for status command)
+- ~1000 CKB per node from faucet
+
+**Directory structure created:**
+```
+testnet-fnn/
+├── bin/
+│   ├── fnn
+│   └── ckb-cli
+├── nodeA/
+│   ├── ckb/
+│   │   ├── key          # Private key
+│   │   ├── address      # CKB testnet address
+│   │   └── lock_arg
+│   ├── config.yml
+│   ├── fnn.log
+│   └── fnn.pid
+└── nodeB/
+    └── (same structure)
+```
+
 ## Code Style Guidelines
 
 ### Import Organization
