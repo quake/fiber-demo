@@ -102,14 +102,15 @@ The `scripts/setup-fiber-testnet.sh` script automates setting up two local Fiber
 1. Downloads `fnn` (Fiber Node) v0.7.0 and `ckb-cli` v2.0.0
 2. Creates two CKB accounts using ckb-cli
 3. Displays addresses for funding via [CKB Faucet](https://faucet.nervos.org)
-4. Starts two local Fiber nodes (NodeA on port 8227, NodeB on port 8229)
-5. Connects both nodes to testnet public node1
-6. Opens 500 CKB channels with node1
+4. Auto-checks balances and waits for funding (checks every 3 seconds)
+5. Starts two local Fiber nodes (NodeA on port 8227, NodeB on port 8229)
+6. Connects NodeA to NodeB directly
+7. Opens a 500 CKB channel between the two local nodes
 
 **Requirements:**
 - `curl`, `tar`, `unzip` (for binary downloads)
 - `jq` (for status command)
-- ~1000 CKB per node from faucet
+- ~1000 CKB total from faucet (only NodeA needs funds to open the channel)
 
 **Directory structure created:**
 ```
