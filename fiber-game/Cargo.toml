@@ -3,6 +3,7 @@ members = [
     "crates/fiber-game-core",
     "crates/fiber-game-oracle",
     "crates/fiber-game-player",
+    "crates/fiber-game-demo",
 ]
 resolver = "2"
 

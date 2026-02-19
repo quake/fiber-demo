@@ -52,17 +52,30 @@ cd fiber-escrow/crates/fiber-escrow-service && cargo run
 # With custom port
 cd fiber-escrow/crates/fiber-escrow-service && PORT=3001 cargo run
 
-# Game demo - Oracle (http://localhost:3000)
-# Note: Conflicts with Escrow, run one at a time
-cd fiber-game/crates/fiber-game-oracle && cargo run -p fiber-game-oracle
+# Game demo - Combined (Recommended, single command)
+cd fiber-game/crates/fiber-game-demo && cargo run
+# Opens:
+#   Player A: http://localhost:3000/player-a/
+#   Player B: http://localhost:3000/player-b/
 
-# Game demo - Player (http://localhost:3001)
+# Game demo - Separate services (legacy)
+cd fiber-game/crates/fiber-game-oracle && cargo run -p fiber-game-oracle
 cd fiber-game/crates/fiber-game-player && cargo run -p fiber-game-player
 ```
 
 ### Two-Player Local Testing
 
-To test the game with two players locally, start three terminals:
+**Recommended: Use the combined demo service**
+
+```bash
+cd fiber-game/crates/fiber-game-demo && cargo run
+```
+
+Then open two browser windows:
+- Player A: http://localhost:3000/player-a/
+- Player B: http://localhost:3000/player-b/
+
+**Alternative: Separate services (requires 3 terminals)**
 
 ```bash
 # Terminal 1 - Oracle (must start first)
@@ -74,8 +87,6 @@ cd fiber-game/crates/fiber-game-player && cargo run
 # Terminal 3 - Player B (http://localhost:3002)
 cd fiber-game/crates/fiber-game-player && PORT=3002 ORACLE_URL=http://localhost:3000 cargo run
 ```
-
-Then open browsers to http://localhost:3001 (Player A) and http://localhost:3002 (Player B).
 
 ### Linting
 ```bash
@@ -312,7 +323,8 @@ pub async fn create_order(
 ### fiber-game
 - Uses secp256k1 for signature-based game resolution
 - Oracle generates adaptor signatures for game outcomes
-- Three crates: core library, oracle service, player service
+- Four crates: core library, oracle service, player service, combined demo
+- Combined demo (`fiber-game-demo`) runs Oracle + 2 Players on single port
 
 ### fiber-escrow
 - Single service with multi-role Web UI
