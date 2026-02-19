@@ -5,7 +5,7 @@
 # 1. Downloads fnn (Fiber Node) and ckb-cli binaries
 # 2. Creates two accounts with ckb-cli
 # 3. Starts two Fiber nodes connected to testnet
-# 4. Opens channels with the public testnet node1
+# 4. Opens a channel between the two local nodes
 #
 # Usage: ./scripts/setup-fiber-testnet.sh
 
@@ -14,8 +14,6 @@ set -e
 # Configuration
 FNN_VERSION="v0.7.0"
 CKB_CLI_VERSION="v2.0.0"
-TESTNET_NODE1_PEER_ID="QmXen3eUHhywmutEzydCsW4hXBoeVmdET2FJvMX69XJ1Eo"
-TESTNET_NODE1_ADDR="/ip4/18.162.235.225/tcp/8119/p2p/${TESTNET_NODE1_PEER_ID}"
 CHANNEL_FUNDING_AMOUNT="0xba43b7400"  # 500 CKB = 50000000000 shannon
 CKB_RPC_URL="https://testnet.ckb.dev"
 FAUCET_URL="https://faucet.nervos.org"
@@ -32,6 +30,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 WORK_DIR="${PROJECT_DIR}/testnet-fnn"
 BIN_DIR="${WORK_DIR}/bin"
+CKB_CLI_HOME="${WORK_DIR}/ckb-cli-home"
+export CKB_CLI_HOME
 
 # Colors for output
 RED='\033[0;31m'
@@ -157,47 +157,72 @@ download_ckb_cli() {
     log_success "ckb-cli downloaded to ${BIN_DIR}/ckb-cli"
 }
 
+# List existing accounts
+list_accounts() {
+    "${BIN_DIR}/ckb-cli" account list --output-format json 2>/dev/null
+}
+
+# Get account count
+get_account_count() {
+    local accounts=$(list_accounts)
+    echo "$accounts" | jq 'length'
+}
+
 # Create account using ckb-cli
 create_account() {
     local node_name=$1
+    local account_index=$2  # 0 for nodeA, 1 for nodeB
     local node_dir="${WORK_DIR}/${node_name}"
     local ckb_dir="${node_dir}/ckb"
-    
-    log_info "Creating account for ${node_name}..."
     
     mkdir -p "${ckb_dir}"
     
     # Use a fixed password for this demo (in production use a secure password)
     local password="123"
     
-    # Create account with ckb-cli
-    # Use expect-like approach with stdin
-    local output=$("${BIN_DIR}/ckb-cli" account new --local-only <<EOF
+    # Check if we need to create a new account
+    local account_count=$(get_account_count)
+    
+    if [[ $account_count -le $account_index ]]; then
+        log_info "Creating account for ${node_name}..."
+        
+        # Create account with ckb-cli
+        local output=$("${BIN_DIR}/ckb-cli" account new --local-only <<EOF
 ${password}
 ${password}
 EOF
 2>&1)
-    
-    # Extract lock_arg from output
-    local lock_arg=$(echo "$output" | grep -oP 'lock_arg:\s+\K0x[a-fA-F0-9]+' | head -1)
-    
-    if [[ -z "$lock_arg" ]]; then
-        log_error "Failed to create account for ${node_name}"
-        echo "$output"
-        exit 1
+        
+        # Extract lock_arg from output
+        local lock_arg=$(echo "$output" | grep -oP 'lock_arg:\s+\K0x[a-fA-F0-9]+' | head -1)
+        
+        if [[ -z "$lock_arg" ]]; then
+            log_error "Failed to create account for ${node_name}"
+            echo "$output"
+            exit 1
+        fi
+    else
+        log_info "Using existing account for ${node_name}..."
     fi
     
-    log_info "Exporting private key for ${node_name}..."
+    # Get account info from the list
+    local accounts=$(list_accounts)
+    local lock_arg=$(echo "$accounts" | jq -r ".[$account_index].lock_arg")
     
-    # Export private key
-    "${BIN_DIR}/ckb-cli" account export --lock-arg "$lock_arg" --extended-privkey-path "${ckb_dir}/exported-key" <<EOF
+    # Check if key file already exists
+    if [[ ! -f "${ckb_dir}/key" ]]; then
+        log_info "Exporting private key for ${node_name}..."
+        
+        # Export private key
+        "${BIN_DIR}/ckb-cli" account export --lock-arg "$lock_arg" --extended-privkey-path "${ckb_dir}/exported-key" <<EOF
 ${password}
 EOF
-    
-    # Extract first line (the actual private key) and save to key file
-    head -n 1 "${ckb_dir}/exported-key" > "${ckb_dir}/key"
-    chmod 600 "${ckb_dir}/key"
-    rm -f "${ckb_dir}/exported-key"
+        
+        # Extract first line (the actual private key) and save to key file
+        head -n 1 "${ckb_dir}/exported-key" > "${ckb_dir}/key"
+        chmod 600 "${ckb_dir}/key"
+        rm -f "${ckb_dir}/exported-key"
+    fi
     
     # Get address using key-info
     local key_info=$("${BIN_DIR}/ckb-cli" util key-info --privkey-path "${ckb_dir}/key" 2>&1)
@@ -207,7 +232,7 @@ EOF
     echo "$address" > "${ckb_dir}/address"
     echo "$lock_arg" > "${ckb_dir}/lock_arg"
     
-    log_success "Account created for ${node_name}"
+    log_success "Account ready for ${node_name}"
     echo "  Address: ${address}"
     echo "  Lock arg: ${lock_arg}"
 }
@@ -289,6 +314,10 @@ fiber:
     - "/ip4/54.179.226.154/tcp/8228/p2p/Qmes1EBD4yNo9Ywkfe6eRw9tG1nVNGLDmMud1xJMsoYFKy"
     - "/ip4/16.163.7.105/tcp/8228/p2p/QmdyQWjPtbK4NWWsvy8s69NGJaQULwgeQDT5ZpNDrTNaeV"
   announce_listening_addr: false
+  # Auto accept channels with at least 100 CKB funding
+  open_channel_auto_accept_min_ckb_funding_amount: 10000000000
+  # Auto contribute 500 CKB when accepting a channel
+  auto_accept_channel_ckb_funding_amount: 50000000000
   chain: testnet
   scripts:
     - name: FundingLock
@@ -433,20 +462,50 @@ open_channel() {
 # List channels
 list_channels() {
     local rpc_port=$1
-    local peer_id=$2
+    local peer_id=${2:-}
     
+    if [[ -n "$peer_id" ]]; then
+        curl -s --location "http://127.0.0.1:${rpc_port}" \
+            --header 'Content-Type: application/json' \
+            --data '{
+                "id": 3,
+                "jsonrpc": "2.0",
+                "method": "list_channels",
+                "params": [
+                    {
+                        "peer_id": "'"${peer_id}"'"
+                    }
+                ]
+            }'
+    else
+        curl -s --location "http://127.0.0.1:${rpc_port}" \
+            --header 'Content-Type: application/json' \
+            --data '{
+                "id": 3,
+                "jsonrpc": "2.0",
+                "method": "list_channels",
+                "params": [{}]
+            }'
+    fi
+}
+
+# Get node info (peer_id)
+get_node_info() {
+    local rpc_port=$1
     curl -s --location "http://127.0.0.1:${rpc_port}" \
         --header 'Content-Type: application/json' \
         --data '{
-            "id": 3,
+            "id": 4,
             "jsonrpc": "2.0",
-            "method": "list_channels",
-            "params": [
-                {
-                    "peer_id": "'"${peer_id}"'"
-                }
-            ]
+            "method": "node_info",
+            "params": []
         }'
+}
+
+# Extract peer_id from node log file
+get_peer_id_from_log() {
+    local node_dir=$1
+    grep -oP 'peer id PeerId\(\K[^)]+' "${node_dir}/fnn.log" | head -1
 }
 
 # Wait for channel to be ready
@@ -524,15 +583,15 @@ main() {
             log_info "Using existing node configuration"
         else
             rm -rf "${WORK_DIR}/nodeA" "${WORK_DIR}/nodeB"
-            create_account "nodeA"
-            create_account "nodeB"
+            create_account "nodeA" 0
+            create_account "nodeB" 1
             create_config "nodeA" "$NODE_A_RPC_PORT" "$NODE_A_P2P_PORT"
             create_config "nodeB" "$NODE_B_RPC_PORT" "$NODE_B_P2P_PORT"
         fi
     else
-        # Create accounts
-        create_account "nodeA"
-        create_account "nodeB"
+        # Create accounts (will reuse existing accounts in CKB_CLI_HOME if available)
+        create_account "nodeA" 0
+        create_account "nodeB" 1
         
         # Create configs
         create_config "nodeA" "$NODE_A_RPC_PORT" "$NODE_A_P2P_PORT"
@@ -550,39 +609,52 @@ main() {
     wait_for_node "nodeA" "$NODE_A_RPC_PORT"
     wait_for_node "nodeB" "$NODE_B_RPC_PORT"
     
-    # Connect to testnet node1
-    echo ""
-    log_info "Connecting nodes to testnet node1..."
-    
-    connect_peer "$NODE_A_RPC_PORT" "$TESTNET_NODE1_ADDR"
-    sleep 2
-    connect_peer "$NODE_B_RPC_PORT" "$TESTNET_NODE1_ADDR"
+    # Give nodes a moment to fully initialize and write peer_id to log
     sleep 2
     
-    # Open channels with node1
+    # Get peer IDs
     echo ""
-    log_info "Opening 500 CKB channels with testnet node1..."
+    log_info "Getting node peer IDs..."
     
-    local result_a=$(open_channel "$NODE_A_RPC_PORT" "$TESTNET_NODE1_PEER_ID" "$CHANNEL_FUNDING_AMOUNT")
-    echo "NodeA open_channel result: $result_a"
+    local nodeA_peer_id=$(get_peer_id_from_log "${WORK_DIR}/nodeA")
+    local nodeB_peer_id=$(get_peer_id_from_log "${WORK_DIR}/nodeB")
     
+    if [[ -z "$nodeA_peer_id" ]] || [[ -z "$nodeB_peer_id" ]]; then
+        log_error "Failed to get peer IDs from logs"
+        log_error "NodeA log tail:"
+        tail -10 "${WORK_DIR}/nodeA/fnn.log"
+        log_error "NodeB log tail:"
+        tail -10 "${WORK_DIR}/nodeB/fnn.log"
+        exit 1
+    fi
+    
+    echo "  NodeA peer_id: ${nodeA_peer_id}"
+    echo "  NodeB peer_id: ${nodeB_peer_id}"
+    
+    # Save peer IDs for status command
+    echo "$nodeA_peer_id" > "${WORK_DIR}/nodeA/peer_id"
+    echo "$nodeB_peer_id" > "${WORK_DIR}/nodeB/peer_id"
+    
+    # Connect NodeA to NodeB
+    echo ""
+    log_info "Connecting NodeA to NodeB..."
+    
+    local nodeB_addr="/ip4/127.0.0.1/tcp/${NODE_B_P2P_PORT}/p2p/${nodeB_peer_id}"
+    connect_peer "$NODE_A_RPC_PORT" "$nodeB_addr"
     sleep 2
     
-    local result_b=$(open_channel "$NODE_B_RPC_PORT" "$TESTNET_NODE1_PEER_ID" "$CHANNEL_FUNDING_AMOUNT")
-    echo "NodeB open_channel result: $result_b"
-    
-    # Wait for channels to be ready
+    # Open channel from NodeA to NodeB
     echo ""
-    log_info "Waiting for channels to be ready (this may take a few minutes)..."
+    log_info "Opening 500 CKB channel from NodeA to NodeB..."
     
-    wait_for_channel_ready "nodeA" "$NODE_A_RPC_PORT" "$TESTNET_NODE1_PEER_ID" &
-    local wait_a_pid=$!
+    local result=$(open_channel "$NODE_A_RPC_PORT" "$nodeB_peer_id" "$CHANNEL_FUNDING_AMOUNT")
+    echo "open_channel result: $result"
     
-    wait_for_channel_ready "nodeB" "$NODE_B_RPC_PORT" "$TESTNET_NODE1_PEER_ID" &
-    local wait_b_pid=$!
+    # Wait for channel to be ready
+    echo ""
+    log_info "Waiting for channel to be ready (this may take a few minutes)..."
     
-    wait $wait_a_pid
-    wait $wait_b_pid
+    wait_for_channel_ready "nodeA" "$NODE_A_RPC_PORT" "$nodeB_peer_id"
     
     echo ""
     echo "=========================================="
@@ -592,8 +664,11 @@ main() {
     echo "NodeA RPC: http://127.0.0.1:${NODE_A_RPC_PORT}"
     echo "NodeB RPC: http://127.0.0.1:${NODE_B_RPC_PORT}"
     echo ""
+    echo "NodeA peer_id: ${nodeA_peer_id}"
+    echo "NodeB peer_id: ${nodeB_peer_id}"
+    echo ""
     echo "To check channel status:"
-    echo "  curl -s http://127.0.0.1:${NODE_A_RPC_PORT} -H 'Content-Type: application/json' -d '{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"list_channels\",\"params\":[{}]}'"
+    echo "  $0 status"
     echo ""
     echo "To stop nodes:"
     echo "  $0 stop"
@@ -610,11 +685,11 @@ case "${1:-}" in
         stop_nodes
         ;;
     status)
-        echo "NodeA:"
-        list_channels "$NODE_A_RPC_PORT" "$TESTNET_NODE1_PEER_ID" | jq .
+        echo "NodeA channels:"
+        list_channels "$NODE_A_RPC_PORT" | jq .
         echo ""
-        echo "NodeB:"
-        list_channels "$NODE_B_RPC_PORT" "$TESTNET_NODE1_PEER_ID" | jq .
+        echo "NodeB channels:"
+        list_channels "$NODE_B_RPC_PORT" | jq .
         ;;
     *)
         main
