@@ -356,6 +356,35 @@
         let currentUserId = null;
         let users = [];
         let disputeOrderId = null;
+        // Store preimages locally (in real app, would be in secure storage)
+        let orderPreimages = {};
+
+        // Crypto helpers for preimage/payment_hash generation
+        async function generatePreimage() {
+            // Generate 32 random bytes
+            const preimage = new Uint8Array(32);
+            crypto.getRandomValues(preimage);
+            return preimage;
+        }
+
+        async function computePaymentHash(preimage) {
+            // SHA-256 hash of preimage
+            const hashBuffer = await crypto.subtle.digest('SHA-256', preimage);
+            return new Uint8Array(hashBuffer);
+        }
+
+        function bytesToHex(bytes) {
+            return '0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        function hexToBytes(hex) {
+            const cleanHex = hex.startsWith('0x') ? hex.slice(2) : hex;
+            const bytes = new Uint8Array(cleanHex.length / 2);
+            for (let i = 0; i < bytes.length; i++) {
+                bytes[i] = parseInt(cleanHex.substr(i * 2, 2), 16);
+            }
+            return bytes;
+        }
 
         // API helpers
         async function api(method, path, body = null) {
@@ -493,8 +522,22 @@
         }
 
         async function buyProduct(productId) {
-            const data = await api('POST', '/orders', { product_id: productId });
+            // Generate preimage and payment_hash
+            const preimage = await generatePreimage();
+            const paymentHash = await computePaymentHash(preimage);
+            const preimageHex = bytesToHex(preimage);
+            const paymentHashHex = bytesToHex(paymentHash);
+
+            const data = await api('POST', '/orders', { 
+                product_id: productId,
+                payment_hash: paymentHashHex
+            });
             if (data.order_id) {
+                // Store preimage locally for later confirmation
+                orderPreimages[data.order_id] = preimageHex;
+                // Also store in localStorage for persistence
+                localStorage.setItem(`preimage_${data.order_id}`, preimageHex);
+                
                 showToast('Order created! Go to My Orders to pay.');
                 refresh();
             } else {
@@ -516,6 +559,7 @@
             list.innerHTML = orders.map(o => {
                 const isBuyer = o.buyer_id === currentUserId;
                 const isSeller = o.seller_id === currentUserId;
+                const hasPreimage = orderPreimages[o.id] || localStorage.getItem(`preimage_${o.id}`);
                 return `
                 <div class="card">
                     <div class="card-header">
@@ -533,6 +577,8 @@
                             <div class="price" style="margin-top: 4px;">${o.amount_sat.toLocaleString()} sats</div>
                         </div>
                     </div>
+                    ${isBuyer && hasPreimage ? `<p style="color: #2ecc71; font-size: 0.8rem; margin-bottom: 8px;">&#128273; Preimage stored locally</p>` : ''}
+                    ${o.invoice_string ? `<p style="color: #888; font-size: 0.75rem; word-break: break-all; margin-bottom: 8px;">Invoice: ${escapeHtml(o.invoice_string.slice(0, 50))}...</p>` : ''}
                     ${o.dispute ? `<p style="color: #e74c3c; font-size: 0.9rem;">Dispute: ${escapeHtml(o.dispute.reason)}</p>` : ''}
                     <div class="actions">
                         ${getOrderActions(o, isBuyer, isSeller)}
@@ -547,6 +593,7 @@
 
         function getOrderActions(order, isBuyer, isSeller) {
             const actions = [];
+            const hasPreimage = orderPreimages[order.id] || localStorage.getItem(`preimage_${order.id}`);
             
             if (isBuyer && order.status === 'waiting_payment') {
                 actions.push(`<button class="btn btn-primary" onclick="payOrder('${order.id}')">Pay Now</button>`);
@@ -555,7 +602,11 @@
                 actions.push(`<button class="btn btn-primary" onclick="shipOrder('${order.id}')">Mark Shipped</button>`);
             }
             if (isBuyer && order.status === 'shipped') {
-                actions.push(`<button class="btn btn-success" onclick="confirmOrder('${order.id}')">Confirm Receipt</button>`);
+                if (hasPreimage) {
+                    actions.push(`<button class="btn btn-success" onclick="confirmOrder('${order.id}')">Confirm Receipt</button>`);
+                } else {
+                    actions.push(`<button class="btn btn-secondary" disabled title="Preimage not available">Confirm (no preimage)</button>`);
+                }
                 actions.push(`<button class="btn btn-danger" onclick="openDisputeModal('${order.id}')">Dispute</button>`);
             }
             if (isBuyer && order.status === 'funded') {
@@ -586,8 +637,20 @@
         }
 
         async function confirmOrder(orderId) {
-            const data = await api('POST', `/orders/${orderId}/confirm`);
+            // Get preimage from memory or localStorage
+            let preimageHex = orderPreimages[orderId] || localStorage.getItem(`preimage_${orderId}`);
+            
+            if (!preimageHex) {
+                showToast('Preimage not found. You can only confirm orders you created.', true);
+                return;
+            }
+
+            const data = await api('POST', `/orders/${orderId}/confirm`, { preimage: preimageHex });
             if (data.status === 'completed') {
+                // Clean up stored preimage
+                delete orderPreimages[orderId];
+                localStorage.removeItem(`preimage_${orderId}`);
+                
                 showToast('Order completed! Funds released to seller.');
                 refresh();
             } else {
@@ -697,6 +760,14 @@
         }
 
         // Initialize
+        // Load stored preimages from localStorage
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key.startsWith('preimage_')) {
+                const orderId = key.replace('preimage_', '');
+                orderPreimages[orderId] = localStorage.getItem(key);
+            }
+        }
         loadUsers().then(() => refresh());
     </script>
 </body>

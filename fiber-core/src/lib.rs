@@ -8,4 +8,7 @@ pub mod crypto;
 pub mod fiber;
 
 pub use crypto::{PaymentHash, Preimage};
-pub use fiber::{FiberClient, FiberError, HoldInvoice, MockFiberClient, PaymentId, PaymentStatus};
+pub use fiber::{
+    FiberClient, FiberError, HoldInvoice, MockFiberClient, PaymentId, PaymentStatus,
+    RpcFiberClient,
+};

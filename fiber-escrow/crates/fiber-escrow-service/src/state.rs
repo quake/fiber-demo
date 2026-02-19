@@ -2,6 +2,7 @@
 
 use crate::models::*;
 use chrono::{DateTime, Utc};
+use fiber_core::RpcFiberClient;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -9,6 +10,9 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<Mutex<AppStateInner>>,
+    /// Optional Fiber client for real payment integration
+    /// When None, the service operates in mock/test mode
+    fiber_client: Option<Arc<RpcFiberClient>>,
 }
 
 struct AppStateInner {
@@ -20,6 +24,7 @@ struct AppStateInner {
 }
 
 impl AppState {
+    /// Create new state without Fiber integration (for testing)
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(AppStateInner {
@@ -28,7 +33,26 @@ impl AppState {
                 orders: HashMap::new(),
                 current_time: None,
             })),
+            fiber_client: None,
         }
+    }
+
+    /// Create new state with Fiber client for real payments
+    pub fn with_fiber_client(fiber_client: Arc<RpcFiberClient>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(AppStateInner {
+                users: HashMap::new(),
+                products: HashMap::new(),
+                orders: HashMap::new(),
+                current_time: None,
+            })),
+            fiber_client: Some(fiber_client),
+        }
+    }
+
+    /// Get the Fiber client if configured
+    pub fn fiber_client(&self) -> Option<&Arc<RpcFiberClient>> {
+        self.fiber_client.as_ref()
     }
 
     /// Get current time (real or simulated)
@@ -72,13 +96,6 @@ impl AppState {
 
     pub fn list_users(&self) -> Vec<User> {
         self.inner.lock().unwrap().users.values().cloned().collect()
-    }
-
-    pub fn adjust_balance(&self, user_id: UserId, amount: i64) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(user) = inner.users.get_mut(&user_id) {
-            user.balance_sat += amount;
-        }
     }
 
     // Product operations
@@ -138,8 +155,13 @@ impl AppState {
 
     // Order operations
 
-    pub fn create_order(&self, product: &Product, buyer_id: UserId) -> Order {
-        let order = Order::new(product, buyer_id, 24); // 24 hour timeout
+    pub fn create_order(
+        &self,
+        product: &Product,
+        buyer_id: UserId,
+        payment_hash: fiber_core::PaymentHash,
+    ) -> Order {
+        let order = Order::new(product, buyer_id, payment_hash, 24); // 24 hour timeout
         let mut inner = self.inner.lock().unwrap();
         inner.orders.insert(order.id, order.clone());
         order
@@ -220,10 +242,28 @@ impl AppState {
         expired
     }
 
-    /// Get preimage for a completed/refunded order (for settlement)
-    pub fn get_order_preimage(&self, order_id: OrderId) -> Option<fiber_core::Preimage> {
+    /// Get revealed preimage for a completed order (for settlement)
+    pub fn get_revealed_preimage(&self, order_id: OrderId) -> Option<fiber_core::Preimage> {
         let inner = self.inner.lock().unwrap();
-        inner.orders.get(&order_id).map(|o| o.preimage.clone())
+        inner
+            .orders
+            .get(&order_id)
+            .and_then(|o| o.revealed_preimage.clone())
+    }
+
+    /// Set revealed preimage when buyer confirms receipt
+    pub fn set_revealed_preimage(&self, order_id: OrderId, preimage: fiber_core::Preimage) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(order) = inner.orders.get_mut(&order_id) {
+            order.revealed_preimage = Some(preimage);
+        }
+    }
+
+    pub fn set_order_invoice(&self, id: OrderId, invoice: String) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(order) = inner.orders.get_mut(&id) {
+            order.invoice_string = Some(invoice);
+        }
     }
 }
 
