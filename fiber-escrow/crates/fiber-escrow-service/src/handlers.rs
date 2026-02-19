@@ -326,6 +326,12 @@ pub async fn create_order(
     let order = state.create_order(&product, buyer_id, payment_hash.clone());
 
     // Store preimage immediately (escrow holds it for timeout/dispute settlement)
+    tracing::info!(
+        "Storing preimage for order {}: preimage_hash={}, order_payment_hash={}",
+        order.id.0,
+        preimage.payment_hash().to_hex(),
+        order.payment_hash.to_hex()
+    );
     state.set_revealed_preimage(order.id, preimage);
 
     // If Fiber client is configured, create hold invoice on seller's node
@@ -706,6 +712,14 @@ pub async fn confirm_order(
             )
         }
     };
+
+    // Debug: verify preimage matches payment_hash
+    tracing::info!(
+        "Settling order {}: preimage_hash={}, order_payment_hash={}",
+        order_id.0,
+        preimage.payment_hash().to_hex(),
+        order.payment_hash.to_hex()
+    );
 
     // Mark order as completed
     state.update_order_status(order_id, OrderStatus::Completed);

@@ -1,9 +1,23 @@
 //! Preimage and PaymentHash for hold invoices.
 
+use blake2b_rs::Blake2bBuilder;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::fmt;
+
+/// CKB default hash personalization
+const CKB_HASH_PERSONALIZATION: &[u8] = b"ckb-default-hash";
+
+/// Create a CKB hash (Blake2b-256 with CKB personalization)
+fn ckb_hash(data: &[u8]) -> [u8; 32] {
+    let mut blake2b = Blake2bBuilder::new(32)
+        .personal(CKB_HASH_PERSONALIZATION)
+        .build();
+    blake2b.update(data);
+    let mut hash = [0u8; 32];
+    blake2b.finalize(&mut hash);
+    hash
+}
 
 /// 32-byte preimage, its hash is the payment_hash
 #[derive(Clone, Serialize, Deserialize)]
@@ -44,12 +58,9 @@ impl Preimage {
         format!("0x{}", hex::encode(&self.0))
     }
 
-    /// Compute the payment hash (SHA256 of preimage)
+    /// Compute the payment hash (CKB Hash = Blake2b-256 with "ckb-default-hash" personalization)
     pub fn payment_hash(&self) -> PaymentHash {
-        let mut hasher = Sha256::new();
-        hasher.update(&self.0);
-        let result = hasher.finalize();
-        PaymentHash(result.into())
+        PaymentHash(ckb_hash(&self.0))
     }
 }
 
@@ -59,7 +70,7 @@ impl fmt::Debug for Preimage {
     }
 }
 
-/// SHA256 hash of preimage
+/// CKB Hash (Blake2b-256) of preimage
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PaymentHash([u8; 32]);
 

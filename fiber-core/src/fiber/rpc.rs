@@ -85,6 +85,9 @@ impl RpcFiberClient {
             "params": params_array
         });
 
+        // Debug: log the request
+        println!("[RpcFiberClient] {} -> {}", method, serde_json::to_string(&request).unwrap_or_default());
+
         let response = self
             .client
             .post(&self.rpc_url)
@@ -97,6 +100,9 @@ impl RpcFiberClient {
             .json()
             .await
             .map_err(|e| FiberError::NetworkError(e.to_string()))?;
+
+        // Debug: log the response
+        println!("[RpcFiberClient] {} <- {}", method, serde_json::to_string(&result).unwrap_or_default());
 
         if let Some(error) = result.get("error") {
             let msg = error
