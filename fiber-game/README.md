@@ -165,6 +165,29 @@ Player A                    Oracle                    Player B
 
 **Key insight**: Each player's `my_invoice` is created with the **opponent's** `payment_hash`. To settle it, you need the **opponent's preimage**, which the Oracle only reveals to the winner.
 
+#### Oracle Trust Model
+
+**Current Demo (Simplified)**: This demo uses a **trusted Oracle** model for simplicity. The Oracle:
+- Stores both players' preimages
+- Determines the winner based on revealed moves
+- Reveals the loser's preimage to the winner
+
+If the Oracle cheats (e.g., reveals the wrong preimage or lies about the winner), players cannot detect it in this simplified version.
+
+**Production Design (Adaptor Signatures)**: The full protocol uses **adaptor signatures** to make Oracle cheating detectable:
+
+1. Before the game starts, the Oracle commits to a **signature point** for each possible outcome
+2. Players verify these commitments match the Oracle's public key
+3. When the game ends, the Oracle reveals the **adaptor signature** for the actual outcome
+4. Players can verify the signature matches the pre-committed point
+
+If the Oracle tries to cheat:
+- **Wrong winner**: The adaptor signature won't match the committed signature point for that outcome
+- **Invalid signature**: Players can cryptographically prove the Oracle misbehaved
+- **Public accountability**: The Oracle's public key is known, so cheating damages its reputation
+
+The adaptor signature approach is implemented in `fiber-game-core/src/crypto/signature_point.rs` but not yet integrated into the demo's settlement flow.
+
 #### Production Considerations
 
 In this demo, we trust that opponents correctly use the exchanged `payment_hash` from the Oracle. In a production environment, additional verification is needed:
