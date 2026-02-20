@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Player B - Fiber Game Demo</title>
+    <title>Fiber Game Demo</title>
     <style>
         * {
             box-sizing: border-box;
@@ -22,28 +22,61 @@
             margin: 0 auto;
         }
         header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            background: linear-gradient(90deg, #ff6b6b, #ffd93d);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .player-info {
-            background: rgba(255,255,255,0.1);
-            padding: 15px 20px;
-            border-radius: 10px;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            padding: 20px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
             margin-bottom: 20px;
         }
+        h1 {
+            font-size: 1.5rem;
+        }
+        /* Dynamic theme colors via CSS variables */
+        :root {
+            --primary-start: #00d9ff;
+            --primary-end: #00ff88;
+            --accent: #00d9ff;
+            --highlight: #00ff88;
+        }
+        body.player-b {
+            --primary-start: #ff6b6b;
+            --primary-end: #ffd93d;
+            --accent: #ff6b6b;
+            --highlight: #ffd93d;
+        }
+        h1 {
+            background: linear-gradient(90deg, var(--primary-start), var(--primary-end));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .player-selector {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .player-selector label {
+            font-size: 0.9rem;
+            color: #888;
+        }
+        .player-selector select {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--accent);
+            background: #1a1a2e;
+            color: #fff;
+            cursor: pointer;
+        }
+        .player-selector select option {
+            background: #1a1a2e;
+        }
         .balance {
-            font-size: 1.5em;
-            color: #ffd93d;
+            padding: 8px 16px;
+            background: rgba(0,210,255,0.1);
+            border-radius: 8px;
+            font-weight: bold;
+            color: var(--highlight);
         }
         .section {
             background: rgba(255,255,255,0.05);
@@ -53,10 +86,10 @@
         }
         .section h2 {
             margin-bottom: 15px;
-            color: #ff6b6b;
+            color: var(--accent);
         }
         .btn {
-            background: linear-gradient(90deg, #ff6b6b, #ffd93d);
+            background: linear-gradient(90deg, var(--primary-start), var(--primary-end));
             color: #1a1a2e;
             border: none;
             padding: 12px 24px;
@@ -94,11 +127,11 @@
             margin-right: 15px;
         }
         .game-type {
-            color: #ff6b6b;
+            color: var(--accent);
             font-weight: bold;
         }
         .amount {
-            color: #ffd93d;
+            color: var(--highlight);
         }
         .create-form {
             display: flex;
@@ -137,12 +170,12 @@
             transition: all 0.3s;
         }
         .rps-btn:hover {
-            border-color: #ff6b6b;
+            border-color: var(--accent);
             transform: scale(1.1);
         }
         .rps-btn.selected {
-            border-color: #ffd93d;
-            background: rgba(255,217,61,0.2);
+            border-color: var(--highlight);
+            background: rgba(255,255,255,0.15);
         }
         .status {
             padding: 10px;
@@ -158,7 +191,7 @@
             margin-bottom: 15px;
         }
         .result.win {
-            color: #ffd93d;
+            color: var(--highlight);
         }
         .result.lose {
             color: #ff4444;
@@ -170,7 +203,7 @@
             width: 30px;
             height: 30px;
             border: 3px solid rgba(255,255,255,0.2);
-            border-top-color: #ff6b6b;
+            border-top-color: var(--accent);
             border-radius: 50%;
             animation: spin 1s linear infinite;
             margin: 15px auto;
@@ -200,13 +233,6 @@
         .modal h2 {
             margin-bottom: 20px;
         }
-        .close-btn {
-            position: absolute;
-            top: 10px;
-            right: 15px;
-            font-size: 1.5em;
-            cursor: pointer;
-        }
         .guess-input {
             text-align: center;
             margin: 20px 0;
@@ -219,45 +245,30 @@
         .hidden {
             display: none !important;
         }
-        .player-badge {
-            background: linear-gradient(90deg, #ff6b6b, #ffd93d);
-            color: #1a1a2e;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-weight: bold;
-            margin-left: 10px;
-        }
-        .other-player-link {
+        .tip-box {
             text-align: center;
             margin-top: 20px;
             padding: 15px;
             background: rgba(255,255,255,0.05);
             border-radius: 10px;
-        }
-        .other-player-link a {
-            color: #ff6b6b;
-            text-decoration: none;
-        }
-        .other-player-link a:hover {
-            text-decoration: underline;
+            color: #888;
+            font-size: 0.9em;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Fiber Game Demo <span class="player-badge">Player B</span></h1>
-            <p>Decentralized two-player games on Fiber Network</p>
+            <h1>Fiber Game Demo</h1>
+            <div class="player-selector">
+                <label>Playing as:</label>
+                <select id="playerSelect" onchange="switchPlayer()">
+                    <option value="player-a">Player A</option>
+                    <option value="player-b">Player B</option>
+                </select>
+                <div class="balance"><span id="balance">0</span> shannons</div>
+            </div>
         </header>
-
-        <div class="player-info">
-            <div>
-                <strong>Player:</strong> <span id="playerName">Player B</span>
-            </div>
-            <div class="balance">
-                <span id="balance">0</span> shannons
-            </div>
-        </div>
 
         <div class="section">
             <h2>Create New Game</h2>
@@ -285,8 +296,8 @@
             </div>
         </div>
 
-        <div class="other-player-link">
-            Open <a href="/player-a/" target="_blank">Player A</a> in another window to play against yourself
+        <div class="tip-box">
+            Open this page in two browser windows and select different players to play against yourself.
         </div>
     </div>
 
@@ -299,14 +310,30 @@
     </div>
 
     <script>
-        const API_BASE = '/api/player-b';
+        // Current player selection
+        let currentPlayer = 'player-a';
+        
+        function getApiBase() {
+            return `/api/${currentPlayer}`;
+        }
+
+        // Switch player
+        function switchPlayer() {
+            currentPlayer = document.getElementById('playerSelect').value;
+            const isPlayerB = currentPlayer === 'player-b';
+            
+            // Update theme
+            document.body.classList.toggle('player-b', isPlayerB);
+            
+            // Refresh all data
+            refreshAll();
+        }
 
         // Fetch player info
         async function fetchPlayerInfo() {
             try {
-                const resp = await fetch(`${API_BASE}/player`);
+                const resp = await fetch(`${getApiBase()}/player`);
                 const data = await resp.json();
-                document.getElementById('playerName').textContent = data.player_name;
                 document.getElementById('balance').textContent = data.balance.toLocaleString();
             } catch (e) {
                 console.error('Error fetching player info:', e);
@@ -316,7 +343,7 @@
         // Fetch available games
         async function fetchAvailableGames() {
             try {
-                const resp = await fetch(`${API_BASE}/games/available`);
+                const resp = await fetch(`${getApiBase()}/games/available`);
                 const data = await resp.json();
                 const container = document.getElementById('availableGames');
                 
@@ -342,7 +369,7 @@
         // Fetch my games
         async function fetchMyGames() {
             try {
-                const resp = await fetch(`${API_BASE}/games/mine`);
+                const resp = await fetch(`${getApiBase()}/games/mine`);
                 const data = await resp.json();
                 const container = document.getElementById('myGames');
                 
@@ -351,12 +378,19 @@
                     return;
                 }
 
+                // Poll status for games waiting for opponent (triggers invoice creation when opponent joins)
+                for (const g of data.games) {
+                    if (g.phase === 'WaitingForOpponent') {
+                        // Fire and forget - just trigger the status check
+                        fetch(`${getApiBase()}/game/${g.game_id}/status`).catch(() => {});
+                    }
+                }
+
                 container.innerHTML = data.games.map(g => `
                     <div class="game-item">
                         <div class="game-info">
                             <span class="game-type">${formatGameType(g.game_type)}</span>
-                            <span class="amount">${g.amount_shannons} shannons</span>
-                            <span>Role: ${g.role}</span>
+                            <span class="amount">${g.amount_shannons.toLocaleString()} shannons</span>
                             <span>Phase: ${formatPhase(g.phase)}</span>
                         </div>
                         <button class="btn btn-secondary" onclick="openGame('${g.game_id}', '${g.game_type}', '${g.phase}')">
@@ -399,7 +433,7 @@
             const amount = parseInt(document.getElementById('amount').value);
 
             try {
-                const resp = await fetch(`${API_BASE}/game/create`, {
+                const resp = await fetch(`${getApiBase()}/game/create`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ game_type: gameType, amount_shannons: amount })
@@ -416,7 +450,7 @@
         // Join game
         async function joinGame(gameId) {
             try {
-                const resp = await fetch(`${API_BASE}/game/join`, {
+                const resp = await fetch(`${getApiBase()}/game/join`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ game_id: gameId })
@@ -444,7 +478,7 @@
 
             // Fetch current game status
             try {
-                const resp = await fetch(`${API_BASE}/game/${gameId}/status`);
+                const resp = await fetch(`${getApiBase()}/game/${gameId}/status`);
                 const status = await resp.json();
                 
                 // Store for polling
@@ -476,7 +510,7 @@
             stopGamePolling();
             gamePollingInterval = setInterval(async () => {
                 try {
-                    const resp = await fetch(`${API_BASE}/game/${gameId}/status`);
+                    const resp = await fetch(`${getApiBase()}/game/${gameId}/status`);
                     const status = await resp.json();
                     renderGameModal(gameId, gameType, status);
                     
@@ -512,9 +546,9 @@
                 } else if (gameType === 'RockPaperScissors') {
                     content.innerHTML = `
                         <div class="rps-buttons">
-                            <div class="rps-btn" onclick="selectRps(this, 'Rock')">🪨</div>
-                            <div class="rps-btn" onclick="selectRps(this, 'Paper')">📄</div>
-                            <div class="rps-btn" onclick="selectRps(this, 'Scissors')">✂️</div>
+                            <div class="rps-btn" onclick="selectRps(this, 'Rock')">&#129704;</div>
+                            <div class="rps-btn" onclick="selectRps(this, 'Paper')">&#128196;</div>
+                            <div class="rps-btn" onclick="selectRps(this, 'Scissors')">&#9986;&#65039;</div>
                         </div>
                         <div style="text-align: center;">
                             <button class="btn" onclick="submitRps('${gameId}')">Submit</button>
@@ -540,14 +574,18 @@
             if (status.result) {
                 const myAction = formatAction(status.my_action);
                 const oppAction = formatAction(status.opponent_action);
-                const resultText = getResultText(status.result);
+                const resultText = getResultText(status.result, status.role);
                 const resultClass = getResultClass(status.result);
+                const isWinner = isPlayerWinner(status.result, status.role);
+                const isLoser = isPlayerLoser(status.result, status.role);
                 
-                let settleButton = '';
-                if (status.can_settle) {
-                    settleButton = `<button class="btn" onclick="settleGame('${gameId}')">Settle Now</button>`;
-                } else if (status.phase === 'Settled') {
-                    settleButton = '<p style="color: #ffd93d;">Settlement Complete</p>';
+                let settleSection = '';
+                if (status.phase === 'Settled') {
+                    settleSection = '<p style="color: var(--highlight);">Settlement Complete</p>';
+                } else if (status.can_settle) {
+                    settleSection = `<button class="btn" onclick="settleGame('${gameId}')">Settle Now</button>`;
+                } else if (isLoser) {
+                    settleSection = '<p style="color: #888;">Waiting for winner to settle...</p>';
                 }
                 
                 content.innerHTML = `
@@ -556,7 +594,7 @@
                         <p style="margin: 15px 0; color: #ccc;">
                             You: <strong>${myAction}</strong> vs Opponent: <strong>${oppAction}</strong>
                         </p>
-                        ${settleButton}
+                        ${settleSection}
                         <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                     </div>
                 `;
@@ -582,9 +620,11 @@
             return JSON.stringify(action);
         }
 
-        function getResultText(result) {
-            if (result === 'AWins') return 'Player A Wins!';
-            if (result === 'BWins') return 'Player B Wins!';
+        function getResultText(result, role) {
+            // role is the current player's role in this game (A = creator, B = joiner)
+            const isRoleA = role === 'A';
+            if (result === 'AWins') return isRoleA ? 'You Win!' : 'You Lose!';
+            if (result === 'BWins') return isRoleA ? 'You Lose!' : 'You Win!';
             if (result === 'Draw') return "It's a Draw!";
             return result;
         }
@@ -594,9 +634,23 @@
             return '';
         }
 
+        function isPlayerWinner(result, role) {
+            const isRoleA = role === 'A';
+            if (result === 'AWins') return isRoleA;
+            if (result === 'BWins') return !isRoleA;
+            return false; // Draw is not a win
+        }
+
+        function isPlayerLoser(result, role) {
+            const isRoleA = role === 'A';
+            if (result === 'AWins') return !isRoleA;
+            if (result === 'BWins') return isRoleA;
+            return false; // Draw is not a loss
+        }
+
         async function settleGame(gameId) {
             try {
-                const resp = await fetch(`${API_BASE}/game/${gameId}/settle`, {
+                const resp = await fetch(`${getApiBase()}/game/${gameId}/settle`, {
                     method: 'POST'
                 });
                 const data = await resp.json();
@@ -631,6 +685,42 @@
             selectedRps = choice;
         }
 
+        // Helper function to submit action with retry logic for payment hash exchange
+        async function submitActionWithRetry(gameId, action, maxRetries = 5, retryDelay = 2000) {
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    const resp = await fetch(`${getApiBase()}/game/${gameId}/play`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action })
+                    });
+                    
+                    if (resp.ok) {
+                        return await resp.json();
+                    }
+                    
+                    const errorText = await resp.text();
+                    
+                    // If opponent hasn't submitted their hash yet, retry
+                    if (errorText.includes("Opponent hasn't submitted") && attempt < maxRetries) {
+                        console.log(`Attempt ${attempt}: Waiting for opponent... retrying in ${retryDelay/1000}s`);
+                        await new Promise(resolve => setTimeout(resolve, retryDelay));
+                        continue;
+                    }
+                    
+                    // Other errors, show to user
+                    throw new Error(errorText || 'Error submitting action');
+                } catch (e) {
+                    if (attempt === maxRetries) {
+                        throw e;
+                    }
+                    // Network error, retry
+                    await new Promise(resolve => setTimeout(resolve, retryDelay));
+                }
+            }
+            throw new Error('Failed after max retries');
+        }
+
         async function submitRps(gameId) {
             if (!selectedRps) {
                 alert('Please select Rock, Paper, or Scissors');
@@ -638,17 +728,12 @@
             }
 
             try {
-                const resp = await fetch(`${API_BASE}/game/${gameId}/play`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: { Rps: selectedRps } })
-                });
-                const data = await resp.json();
+                const data = await submitActionWithRetry(gameId, { Rps: selectedRps });
                 closeModal();
                 refreshAll();
             } catch (e) {
                 console.error('Error submitting action:', e);
-                alert('Error submitting action');
+                alert(e.message || 'Error submitting action');
             }
         }
 
@@ -660,17 +745,12 @@
             }
 
             try {
-                const resp = await fetch(`${API_BASE}/game/${gameId}/play`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: { GuessNumber: guess } })
-                });
-                const data = await resp.json();
+                const data = await submitActionWithRetry(gameId, { GuessNumber: guess });
                 closeModal();
                 refreshAll();
             } catch (e) {
                 console.error('Error submitting action:', e);
-                alert('Error submitting action');
+                alert(e.message || 'Error submitting action');
             }
         }
 
@@ -680,11 +760,32 @@
             fetchMyGames();
         }
 
+        // Poll status for BOTH players' games waiting for opponent
+        // This ensures invoice creation happens even when viewing the other player
+        async function pollAllWaitingGames() {
+            for (const player of ['player-a', 'player-b']) {
+                try {
+                    const resp = await fetch(`/api/${player}/games/mine`);
+                    const data = await resp.json();
+                    for (const g of data.games) {
+                        if (g.phase === 'WaitingForOpponent') {
+                            fetch(`/api/${player}/game/${g.game_id}/status`).catch(() => {});
+                        }
+                    }
+                } catch (e) {
+                    // Ignore errors
+                }
+            }
+        }
+
         // Initial load
         refreshAll();
 
-        // Auto-refresh every 5 seconds
+        // Auto-refresh current player's view every 5 seconds
         setInterval(refreshAll, 5000);
+
+        // Poll both players' waiting games every 5 seconds (for invoice creation)
+        setInterval(pollAllWaitingGames, 5000);
 
         // Close modal on outside click
         document.getElementById('gameModal').addEventListener('click', (e) => {

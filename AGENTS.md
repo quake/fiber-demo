@@ -51,32 +51,16 @@ cd fiber-escrow/crates/fiber-escrow-service && cargo run
 ```
 Real Fiber nodes: `FIBER_SELLER_RPC_URL=... FIBER_BUYER_RPC_URL=... cargo run`
 
-#### Game Demo - Combined (Recommended, single command)
+#### Game Demo (http://localhost:3000)
 ```bash
 cd fiber-game/crates/fiber-game-demo && cargo run
-# Opens:
-#   Player A: http://localhost:3000/player-a/
-#   Player B: http://localhost:3000/player-b/
+# Single UI with Player A/B role switcher: http://localhost:3000/
 ```
 Real Fiber nodes: `FIBER_PLAYER_A_RPC_URL=... FIBER_PLAYER_B_RPC_URL=... cargo run`
 
-#### Game Demo - Separate services (legacy)
-```bash
-cd fiber-game/crates/fiber-game-oracle && cargo run
-cd fiber-game/crates/fiber-game-player && cargo run
-```
-
 ### Two-Player Local Testing
 
-**Recommended: Use the combined demo service**
-
-```bash
-cd fiber-game/crates/fiber-game-demo && cargo run
-```
-
-Then open two browser windows:
-- Player A: http://localhost:3000/player-a/
-- Player B: http://localhost:3000/player-b/
+Open two browser windows pointing to http://localhost:3000 and select different players (Player A / Player B) using the dropdown in each window.
 
 **Alternative: Separate services (requires 3 terminals)**
 
