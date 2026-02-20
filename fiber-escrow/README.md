@@ -112,7 +112,7 @@ Then open http://localhost:3000 to use the demo.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Fiber Escrow Demo                [User: alice ▼] [9500 sats]   │
+│  Fiber Escrow Demo                [User: alice ▼] [9500 shannons]   │
 ├─────────────────────────────────────────────────────────────────┤
 │  [Market]  [My Orders]  [Arbiter]                               │
 └─────────────────────────────────────────────────────────────────┘
@@ -132,9 +132,9 @@ The marketplace comes with 3 pre-configured products:
 
 | Product | Price | Seller |
 |---------|-------|--------|
-| Digital Art NFT | 1000 sats | bob |
-| E-book:Erta Programming | 500 sats | bob |
-| Music Album | 800 sats | carol |
+| Digital Art NFT | 1000 shannons | bob |
+| E-book:Erta Programming | 500 shannons | bob |
+| Music Album | 800 shannons | carol |
 
 Products remain available after purchase (can be bought multiple times).
 

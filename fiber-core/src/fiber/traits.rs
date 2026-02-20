@@ -1,6 +1,7 @@
 //! Fiber client trait definition.
 
 use crate::crypto::{PaymentHash, Preimage};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -82,8 +83,11 @@ pub enum PaymentStatus {
 /// Implementations can be:
 /// - MockFiberClient for testing
 /// - Real Fiber Network client for production
-#[allow(async_fn_in_trait)]
+#[async_trait]
 pub trait FiberClient: Send + Sync {
+    /// Support downcasting to concrete types
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Create a hold invoice that locks funds until settled or cancelled
     async fn create_hold_invoice(
         &self,

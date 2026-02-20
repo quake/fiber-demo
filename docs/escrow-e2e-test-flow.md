@@ -81,7 +81,7 @@ The Web UI will show a "Your Fiber Node" input field for buyers to enter their n
 | 1 | - | Open http://localhost:3000 | Web UI loads |
 | 2 | - | Configure "Your Fiber Node" RPC URL | Set to `http://localhost:8229` (buyer's node) |
 | 3 | bob | Switch to "bob", go to "My Products" | Products tab visible |
-| 4 | bob | Create product "Test Item" (500 sats) | Product appears in market |
+| 4 | bob | Create product "Test Item" (500 shannons) | Product appears in market |
 | 5 | alice | Switch to "alice", browse Market | "Test Item" visible |
 | 6 | alice | Click "Buy Now" on Test Item | Order created with invoice, status: `waiting_payment` |
 | 7 | alice | Go to "My Orders", click "Pay Now" | Browser calls buyer's node `send_payment`, then escrow verifies. Status: `funded` |
@@ -111,7 +111,7 @@ curl -X POST http://localhost:8227 \
 
 | Step | User | Action | Expected Result |
 |------|------|--------|-----------------|
-| 1 | carol | Create product "Disputed Item" (1000 sats) | Product in market |
+| 1 | carol | Create product "Disputed Item" (1000 shannons) | Product in market |
 | 2 | alice | Buy and pay for the item | Invoice created on seller's node, status: `funded` |
 | 3 | carol | Ship the item | Status: `shipped` |
 | 4 | alice | Click "Dispute", reason: "Item not received" | Status: `disputed` |
@@ -138,7 +138,7 @@ curl -X POST http://localhost:8227 \
 
 | Step | User | Action | Expected Result |
 |------|------|--------|-----------------|
-| 1 | bob | Create product "Another Item" (750 sats) | Product in market |
+| 1 | bob | Create product "Another Item" (750 shannons) | Product in market |
 | 2 | alice | Buy and pay | Status: `funded` |
 | 3 | bob | Ship | Status: `shipped` |
 | 4 | alice | Dispute with reason "Wrong color" | Status: `disputed` |
@@ -159,7 +159,7 @@ curl -X POST http://localhost:8227 \
 
 | Step | User | Action | Expected Result |
 |------|------|--------|-----------------|
-| 1 | bob | Create product "Timeout Test" (300 sats) | Product in market |
+| 1 | bob | Create product "Timeout Test" (300 shannons) | Product in market |
 | 2 | alice | Buy and pay | Status: `funded` |
 | 3 | bob | Ship | Status: `shipped` |
 | 4 | - | (Do NOT confirm - simulate buyer gone) | Status remains `shipped` |

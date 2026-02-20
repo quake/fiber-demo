@@ -75,7 +75,7 @@ Both should show the game lobby with:
 1. In Player A's browser (http://localhost:3001):
    - Click "Create New Game"
    - Select game type: "Rock Paper Scissors"
-   - Enter amount: 1000 sats
+   - Enter amount: 1000 shannons
    - Click "Create Game"
 
 2. Expected result:
@@ -129,11 +129,11 @@ Opponent's move: Rock
 ## Step 7: Settlement
 
 1. **Winner (Player A)** clicks "Settle":
-   - Balance increases by 1000 sats
+   - Balance increases by 1000 shannons
    - Status shows "Settled"
 
 2. **Loser (Player B)** clicks "Settle":
-   - Balance decreases by 1000 sats
+   - Balance decreases by 1000 shannons
    - Status shows "Settled"
 
 Note: In the current mock implementation, settlement adjusts in-memory balances. With real Fiber integration, this would settle the hold invoices using preimages.
@@ -225,9 +225,9 @@ Player A          Oracle           Player B
    │<──A wins───────│─────A wins──────>│
    │                │                  │
    │──settle───────>│                  │
-   │<──+1000 sats───│                  │
+   │<──+1000 shannons───│                  │
    │                │<─────settle──────│
-   │                │────-1000 sats───>│
+   │                │────-1000 shannons───>│
 ```
 
 ## Next Steps

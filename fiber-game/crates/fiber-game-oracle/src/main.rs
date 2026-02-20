@@ -58,7 +58,7 @@ struct OracleState {
 #[allow(dead_code)]
 struct GameState {
     game_type: GameType,
-    amount_sat: u64,
+    amount_shannons: u64,
     status: GameStatus,
     commitment_point: secp256k1::PublicKey,
     oracle_secret: Option<OracleSecret>,
@@ -104,7 +104,7 @@ struct OraclePubkeyResponse {
 struct AvailableGame {
     game_id: GameId,
     game_type: GameType,
-    amount_sat: u64,
+    amount_shannons: u64,
     created_at_secs: u64,
 }
 
@@ -117,7 +117,7 @@ struct AvailableGamesResponse {
 struct CreateGameRequest {
     game_type: GameType,
     player_a_id: Uuid,
-    amount_sat: u64,
+    amount_shannons: u64,
 }
 
 #[derive(Serialize)]
@@ -256,7 +256,7 @@ async fn get_available_games(
         .map(|(id, g)| AvailableGame {
             game_id: *id,
             game_type: g.game_type,
-            amount_sat: g.amount_sat,
+            amount_shannons: g.amount_shannons,
             created_at_secs: g.created_at.elapsed().as_secs(),
         })
         .collect();
@@ -282,7 +282,7 @@ async fn create_game(
 
     let game_state = GameState {
         game_type: req.game_type,
-        amount_sat: req.amount_sat,
+        amount_shannons: req.amount_shannons,
         status: GameStatus::WaitingForOpponent,
         commitment_point,
         oracle_secret,

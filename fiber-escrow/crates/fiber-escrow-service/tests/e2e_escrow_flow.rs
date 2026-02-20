@@ -153,7 +153,7 @@ fn test_escrow_happy_path() {
         .json(&serde_json::json!({
             "title": "Test Widget",
             "description": "A wonderful test widget",
-            "price_sat": 1000
+            "price_shannons": 1000
         }))
         .send()
         .expect("Failed to create product")
@@ -189,10 +189,10 @@ fn test_escrow_happy_path() {
     let payment_hash = create_order_resp["payment_hash"]
         .as_str()
         .expect("No payment_hash in response");
-    let amount_sat = create_order_resp["amount_sat"].as_u64().unwrap();
+    let amount_shannons = create_order_resp["amount_shannons"].as_u64().unwrap();
     println!(
-        "Created order: {}, payment_hash: {}, amount: {} sats",
-        order_id, payment_hash, amount_sat
+        "Created order: {}, payment_hash: {}, amount: {} shannons",
+        order_id, payment_hash, amount_shannons
     );
 
     // 3. Seller submits invoice (using payment_hash to create it)
@@ -316,7 +316,7 @@ fn test_escrow_dispute_refund_to_buyer() {
         .json(&serde_json::json!({
             "title": "Disputed Widget",
             "description": "Will be disputed",
-            "price_sat": 500
+            "price_shannons": 500
         }))
         .send()
         .unwrap()
@@ -453,7 +453,7 @@ fn test_escrow_dispute_resolved_to_seller() {
         .json(&serde_json::json!({
             "title": "Seller Wins Widget",
             "description": "Dispute will be resolved to seller",
-            "price_sat": 600
+            "price_shannons": 600
         }))
         .send()
         .unwrap()
@@ -583,7 +583,7 @@ fn test_escrow_order_timeout() {
         .json(&serde_json::json!({
             "title": "Timeout Widget",
             "description": "Will timeout",
-            "price_sat": 750
+            "price_shannons": 750
         }))
         .send()
         .unwrap()

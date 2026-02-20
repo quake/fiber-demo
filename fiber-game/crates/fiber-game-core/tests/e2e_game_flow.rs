@@ -132,7 +132,7 @@ fn test_player_a_sees_opponent_joined() {
         .post(format!("{}/api/game/create", player_a_url))
         .json(&serde_json::json!({
             "game_type": "RockPaperScissors",
-            "amount_sat": 1000
+            "amount_shannons": 1000
         }))
         .send()
         .expect("Failed to create game")
@@ -247,7 +247,7 @@ fn test_full_rps_game_with_http_services() {
         .post(format!("{}/api/game/create", player_a_url))
         .json(&serde_json::json!({
             "game_type": "RockPaperScissors",
-            "amount_sat": 1000
+            "amount_shannons": 1000
         }))
         .send()
         .expect("Failed to create game")
@@ -331,7 +331,7 @@ fn test_full_rps_game_with_http_services() {
     );
 
     println!(
-        "Test passed: Full game flow completed. A won {} sats",
+        "Test passed: Full game flow completed. A won {} shannons",
         amount_won
     );
 }

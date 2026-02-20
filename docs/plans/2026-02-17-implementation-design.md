@@ -151,7 +151,7 @@ pub struct GameSession {
 /// Phase 2: Hold invoice exchange
 pub struct HoldInvoice {
     pub payment_hash: PaymentHash,
-    pub amount_sat: u64,
+    pub amount_shannons: u64,
     pub expiry_secs: u64,
 }
 
@@ -265,7 +265,7 @@ pub trait FiberClient {
     async fn create_hold_invoice(
         &self,
         payment_hash: &PaymentHash,
-        amount_sat: u64,
+        amount_shannons: u64,
         expiry_secs: u64,
     ) -> Result<HoldInvoice, FiberError>;
 
@@ -330,7 +330,7 @@ struct OracleState {
 
 struct GameState {
     game_type: GameType,
-    amount_sat: u64,
+    amount_shannons: u64,
     status: GameStatus,
     commitment_point: PublicKey,         // R for this game
     oracle_secret: Option<OracleSecret>, // For GuessNumber
@@ -365,10 +365,10 @@ GET  /oracle/pubkey
 
 GET  /games/available
      Query: ?game_type=rps (optional filter)
-     Response: { games: [{ game_id, game_type, amount_sat, created_at }] }
+     Response: { games: [{ game_id, game_type, amount_shannons, created_at }] }
 
 POST /game/create
-     Body: { game_type, player_a_id, amount_sat, timeout_secs }
+     Body: { game_type, player_a_id, amount_shannons, timeout_secs }
      Response: { game_id, oracle_pubkey, commitment_point, oracle_commitment? }
 
 POST /game/{game_id}/join
@@ -376,11 +376,11 @@ POST /game/{game_id}/join
      Response: { status, oracle_pubkey, commitment_point, oracle_commitment? }
 
 POST /game/{game_id}/invoice
-     Body: { player, payment_hash, amount_sat }
+     Body: { player, payment_hash, amount_shannons }
      Response: { status }
 
 GET  /game/{game_id}/invoice/{opponent}
-     Response: { payment_hash, amount_sat }
+     Response: { payment_hash, amount_shannons }
 
 POST /game/{game_id}/encrypted-preimage
      Body: { player, encrypted_preimage }
@@ -451,7 +451,7 @@ GET  /api/games/mine
      Response: { games: [...] }
 
 POST /api/game/create
-     Body: { game_type, amount_sat }
+     Body: { game_type, amount_shannons }
      Response: { game_id }
 
 POST /api/game/join
@@ -493,13 +493,13 @@ POST /api/game/{game_id}/settle
 
 2. Create Game (/create)
    - Select game type (RPS / Guess Number)
-   - Enter amount (sats)
+   - Enter amount (shannons)
    - Click "Create" → redirects to game page
 
 3. Game Page (/game/{game_id})
    ┌─────────────────────────────────────────────┐
    │  Game: abc-123 (Rock-Paper-Scissors)        │
-   │  Amount: 1000 sats                          │
+   │  Amount: 1000 shannons                          │
    │  Status: Waiting for your move              │
    │                                             │
    │  ┌─────┐  ┌─────┐  ┌─────────┐             │
@@ -521,7 +521,7 @@ POST /api/game/{game_id}/settle
    │                                             │
    │  You: Rock    Opponent: Scissors            │
    │                                             │
-   │  You Win! +1000 sats                        │
+   │  You Win! +1000 shannons                        │
    │                                             │
    │  [Settle Now]  (claims funds)               │
    │                                             │
