@@ -119,6 +119,62 @@ cd fiber-game/crates/fiber-game-player && PORT=3002 cargo run
 - **Mock Mode**: By default, the services run in "Mock Mode" with simulated Fiber balances (100,000 shannons initial).
 - **Hold Invoices**: Funds are locked in a Fiber hold invoice when a game starts and only released to the winner upon reveal.
 
+### Hold Invoice Security Model
+
+The game uses hold invoices to lock funds securely:
+
+1. **Payment Hash & Preimage Submission**: Each player generates a random preimage, computes its hash (`payment_hash`), and submits **both** to the Oracle (preimage is kept secret until game ends)
+2. **Cross-Invoice Creation**: Players create invoices using the **opponent's** `payment_hash`, ensuring only the opponent's preimage can settle it
+3. **Mutual Payment**: Both players pay each other's invoices (funds are locked, not transferred)
+4. **Oracle Reveals Preimage**: When the game ends, the Oracle reveals the **loser's preimage** to the winner
+5. **Winner Settlement**: The winner uses the opponent's preimage to settle their own invoice (claiming the funds the opponent paid)
+
+```
+Player A                    Oracle                    Player B
+   │                          │                          │
+   │  preimage_a ──► hash_a   │   preimage_b ──► hash_b  │
+   │                          │                          │
+   │  Submit (hash_a, preimage_a)                        │
+   │─────────────────────────►│                          │
+   │                          │◄─────────────────────────│
+   │                          │  Submit (hash_b, preimage_b)
+   │                          │                          │
+   │  Get hash_b from Oracle  │  Get hash_a from Oracle  │
+   │◄─────────────────────────│─────────────────────────►│
+   │                          │                          │
+   │  Create my_invoice       │       Create my_invoice  │
+   │  (using hash_b)          │       (using hash_a)     │
+   │                          │                          │
+   │  Pay B's invoice ────────┼─────────────────────────►│
+   │◄─────────────────────────┼────────── Pay A's invoice│
+   │                          │                          │
+   │         [Game plays out - both reveal moves]        │
+   │                          │                          │
+   │  Oracle determines A wins│                          │
+   │  Oracle reveals preimage_b to A                     │
+   │◄─────────────────────────│                          │
+   │                          │                          │
+   │  A settles my_invoice    │                          │
+   │  using preimage_b        │                          │
+   │  (claims B's payment)    │                          │
+   │                          │                          │
+   │                          │  B cancels my_invoice    │
+   │                          │  (refunds A's payment)   │
+   │                          │─────────────────────────►│
+```
+
+**Key insight**: Each player's `my_invoice` is created with the **opponent's** `payment_hash`. To settle it, you need the **opponent's preimage**, which the Oracle only reveals to the winner.
+
+#### Production Considerations
+
+In this demo, we trust that opponents correctly use the exchanged `payment_hash` from the Oracle. In a production environment, additional verification is needed:
+
+1. **Invoice String Verification**: The opponent should send their actual invoice string (BOLT11/BOLT12 format)
+2. **Parse and Validate**: Extract the `payment_hash` from the invoice string and verify it matches your `payment_hash`
+3. **Only Then Pay**: Only pay the invoice after verification passes
+
+This prevents a malicious opponent from creating an invoice with a different `payment_hash` that they control.
+
 ## Run Tests
 
 ```bash

@@ -175,7 +175,17 @@ impl FiberClient for RpcFiberClient {
             "invoice": invoice.invoice_string,
         });
 
-        let result = self.call("send_payment", params).await?;
+        let result = self.call("send_payment", params).await;
+        
+        // Handle "already exists" as success - payment is already in progress
+        if let Err(FiberError::NetworkError(ref msg)) = result {
+            if msg.contains("already exists") || msg.contains("Payment session already exists") {
+                println!("[RpcFiberClient] Payment already in progress, treating as success");
+                return Ok(PaymentId::new());
+            }
+        }
+        
+        let result = result?;
 
         // Check payment status
         let status = result
@@ -186,11 +196,16 @@ impl FiberClient for RpcFiberClient {
         match status {
             "success" | "inflight" | "created" => Ok(PaymentId::new()),
             _ => {
+                // Try to get more detailed error info
                 let error = result
                     .get("failed_error")
                     .and_then(|v| v.as_str())
+                    .or_else(|| result.get("message").and_then(|v| v.as_str()))
                     .unwrap_or("Payment failed");
-                Err(FiberError::PaymentFailed(error.to_string()))
+                
+                // Include full response for debugging
+                let full_response = serde_json::to_string(&result).unwrap_or_default();
+                Err(FiberError::PaymentFailed(format!("{} (status: {}, response: {})", error, status, full_response)))
             }
         }
     }
