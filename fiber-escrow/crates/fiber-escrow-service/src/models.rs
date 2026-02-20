@@ -58,6 +58,7 @@ impl Default for OrderId {
 pub struct User {
     pub id: UserId,
     pub username: String,
+    pub balance_shannons: i64,
 }
 
 impl User {
@@ -65,6 +66,7 @@ impl User {
         Self {
             id: UserId::new(),
             username,
+            balance_shannons: 0,
         }
     }
 }
@@ -84,19 +86,19 @@ pub struct Product {
     pub seller_id: UserId,
     pub title: String,
     pub description: String,
-    pub price_sat: u64,
+    pub price_shannons: u64,
     pub status: ProductStatus,
     pub created_at: DateTime<Utc>,
 }
 
 impl Product {
-    pub fn new(seller_id: UserId, title: String, description: String, price_sat: u64) -> Self {
+    pub fn new(seller_id: UserId, title: String, description: String, price_shannons: u64) -> Self {
         Self {
             id: ProductId::new(),
             seller_id,
             title,
             description,
-            price_sat,
+            price_shannons,
             status: ProductStatus::Available,
             created_at: Utc::now(),
         }
@@ -139,7 +141,7 @@ pub struct Order {
     pub product_title: String,
     pub seller_id: UserId,
     pub buyer_id: UserId,
-    pub amount_sat: u64,
+    pub amount_shannons: u64,
 
     // Payment hash provided by buyer (hash of buyer's preimage)
     pub payment_hash: PaymentHash,
@@ -172,7 +174,7 @@ impl Order {
             product_title: product.title.clone(),
             seller_id: product.seller_id,
             buyer_id,
-            amount_sat: product.price_sat,
+            amount_shannons: product.price_shannons,
             payment_hash,
             invoice_string: None,
             revealed_preimage: None,

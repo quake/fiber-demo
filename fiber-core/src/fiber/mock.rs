@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 #[allow(dead_code)]
 struct MockInvoiceState {
     payment_hash: PaymentHash,
-    amount_sat: u64,
+    amount: u64,
     status: PaymentStatus,
     created_at: Instant,
     expiry_secs: u64,
@@ -82,12 +82,12 @@ impl FiberClient for MockFiberClient {
     async fn create_hold_invoice(
         &self,
         payment_hash: &PaymentHash,
-        amount_sat: u64,
+        amount: u64,
         expiry_secs: u64,
     ) -> Result<HoldInvoice, FiberError> {
         let state = MockInvoiceState {
             payment_hash: *payment_hash,
-            amount_sat,
+            amount,
             status: PaymentStatus::Pending,
             created_at: Instant::now(),
             expiry_secs,
@@ -97,7 +97,7 @@ impl FiberClient for MockFiberClient {
 
         Ok(HoldInvoice {
             payment_hash: *payment_hash,
-            amount_sat,
+            amount,
             expiry_secs,
             invoice_string: format!("mock_invoice_{}", hex::encode(payment_hash.as_bytes())),
         })
@@ -107,7 +107,7 @@ impl FiberClient for MockFiberClient {
         // Check balance
         {
             let balance = self.balance.lock().unwrap();
-            if *balance < invoice.amount_sat {
+            if *balance < invoice.amount {
                 return Err(FiberError::InsufficientFunds);
             }
         }
@@ -115,7 +115,7 @@ impl FiberClient for MockFiberClient {
         // Deduct balance (locked)
         {
             let mut balance = self.balance.lock().unwrap();
-            *balance -= invoice.amount_sat;
+            *balance -= invoice.amount;
         }
 
         // Update invoice status to Held
@@ -125,7 +125,7 @@ impl FiberClient for MockFiberClient {
                 if state.is_expired() {
                     // Refund
                     let mut balance = self.balance.lock().unwrap();
-                    *balance += invoice.amount_sat;
+                    *balance += invoice.amount;
                     return Err(FiberError::Expired);
                 }
                 state.status = PaymentStatus::Held;
@@ -135,7 +135,7 @@ impl FiberClient for MockFiberClient {
                     invoice.payment_hash,
                     MockInvoiceState {
                         payment_hash: invoice.payment_hash,
-                        amount_sat: invoice.amount_sat,
+                        amount: invoice.amount,
                         status: PaymentStatus::Held,
                         created_at: Instant::now(),
                         expiry_secs: invoice.expiry_secs,
@@ -172,7 +172,7 @@ impl FiberClient for MockFiberClient {
             PaymentStatus::Held => {
                 // Add funds to our balance (we're the receiver settling)
                 let mut balance = self.balance.lock().unwrap();
-                *balance += state.amount_sat;
+                *balance += state.amount;
                 state.status = PaymentStatus::Settled;
                 Ok(())
             }
@@ -212,6 +212,10 @@ impl FiberClient for MockFiberClient {
         }
 
         Ok(state.status)
+    }
+
+    async fn get_balance(&self) -> Result<u64, FiberError> {
+        Ok(self.balance())
     }
 }
 

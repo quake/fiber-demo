@@ -38,8 +38,8 @@ pub enum FiberError {
 pub struct HoldInvoice {
     /// Payment hash (derived from preimage)
     pub payment_hash: PaymentHash,
-    /// Amount in satoshis
-    pub amount_sat: u64,
+    /// Amount in shannons
+    pub amount: u64,
     /// Expiry time in seconds
     pub expiry_secs: u64,
     /// Invoice string (bolt11 or similar)
@@ -88,7 +88,7 @@ pub trait FiberClient: Send + Sync {
     async fn create_hold_invoice(
         &self,
         payment_hash: &PaymentHash,
-        amount_sat: u64,
+        amount: u64,
         expiry_secs: u64,
     ) -> Result<HoldInvoice, FiberError>;
 
@@ -108,4 +108,7 @@ pub trait FiberClient: Send + Sync {
     /// Check payment status
     async fn get_payment_status(&self, payment_hash: &PaymentHash)
         -> Result<PaymentStatus, FiberError>;
+
+    /// Get the total local balance in shannons across all open channels
+    async fn get_balance(&self) -> Result<u64, FiberError>;
 }
