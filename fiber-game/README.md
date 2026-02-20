@@ -76,9 +76,7 @@ The easiest way to run the demo is using the combined service, which starts the 
 cd fiber-game/crates/fiber-game-demo && cargo run
 ```
 
-Access the player interfaces:
-- **Player A**: [http://localhost:3000/player-a/](http://localhost:3000/player-a/)
-- **Player B**: [http://localhost:3000/player-b/](http://localhost:3000/player-b/)
+Open http://localhost:3000 and use the **Player selector** dropdown to switch between Player A and Player B (open two browser windows for two-player testing).
 
 #### Real Fiber Integration
 To test with real Fiber nodes, set the RPC URLs for each player:
@@ -210,21 +208,25 @@ cargo test --test e2e_game_flow -- --nocapture
 
 ## API Endpoints
 
-### Oracle (`localhost:3001`)
+### Oracle (Combined Demo: `/oracle/*`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/games` | Create a new game |
-| POST | `/games/{id}/join` | Join an existing game |
-| POST | `/games/{id}/reveal` | Reveal your move |
-| GET | `/games/{id}` | Get game state |
+| POST | `/oracle/game/create` | Create a new game |
+| POST | `/oracle/game/{id}/join` | Join an existing game |
+| POST | `/oracle/game/{id}/reveal` | Reveal your move |
+| GET | `/oracle/game/{id}/result` | Get game result |
 
-### Player (`localhost:3002`)
+### Player (Combined Demo: `/player-a/*` or `/player-b/*`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/play` | Play a game (handles full flow) |
-| GET | `/balance` | Get current balance |
+| POST | `/player-{a,b}/games/create` | Create a game |
+| POST | `/player-{a,b}/games/join` | Join a game |
+| POST | `/player-{a,b}/games/{id}/play` | Submit move |
+| GET | `/player-{a,b}/games/{id}/status` | Get game status |
+| POST | `/player-{a,b}/games/{id}/settle` | Settle after game ends |
+| GET | `/player-{a,b}/balance` | Get current balance |
 
 ## Dependencies
 
