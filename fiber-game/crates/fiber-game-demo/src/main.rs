@@ -31,7 +31,7 @@ use std::time::Instant;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
-use tracing::{info, Level};
+use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
 
@@ -878,21 +878,42 @@ async fn player_join_game(
     Json(req): Json<PlayerJoinGameRequest>,
 ) -> Result<Json<PlayerJoinGameResponse>, AppError> {
     let url = format!("{}/game/{}/join", player.oracle_url, req.game_id);
+    info!("{}: Joining game {:?}, calling {}", player.player_name, req.game_id, url);
 
     let body = serde_json::json!({
         "player_b_id": player.player_id,
     });
 
-    let resp: serde_json::Value = player
+    let response = player
         .http_client
         .post(&url)
         .json(&body)
         .send()
         .await
-        .map_err(|e| AppError(e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| AppError(e.to_string()))?;
+        .map_err(|e| {
+            error!("{}: Failed to send join request: {}", player.player_name, e);
+            AppError(e.to_string())
+        })?;
+    
+    let status = response.status();
+    let text = response.text().await.map_err(|e| {
+        error!("{}: Failed to read response body: {}", player.player_name, e);
+        AppError(e.to_string())
+    })?;
+    
+    info!("{}: Join response status={}, body={}", player.player_name, status, text);
+    
+    let resp: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        error!("{}: Failed to parse JSON: {}", player.player_name, e);
+        AppError(format!("Invalid JSON response: {}", e))
+    })?;
+    
+    // Check for error in response
+    if let Some(error) = resp.get("error") {
+        let error_msg = error.as_str().unwrap_or("Unknown error");
+        error!("{}: Oracle returned error: {}", player.player_name, error_msg);
+        return Err(AppError(error_msg.to_string()));
+    }
 
     let oracle_pubkey = hex::decode(resp["oracle_pubkey"].as_str().unwrap_or(""))
         .ok()
@@ -1165,15 +1186,15 @@ fn create_oracle_router() -> Router<Arc<AppState>> {
         .route("/pubkey", get(oracle_get_pubkey))
         .route("/games/available", get(oracle_get_available_games))
         .route("/game/create", post(oracle_create_game))
-        .route("/game/{game_id}/join", post(oracle_join_game))
-        .route("/game/{game_id}/invoice", post(oracle_submit_invoice))
-        .route("/game/{game_id}/invoice/{player}", get(oracle_get_invoice))
-        .route("/game/{game_id}/encrypted-preimage", post(oracle_submit_encrypted_preimage))
-        .route("/game/{game_id}/encrypted-preimage/{player}", get(oracle_get_encrypted_preimage))
-        .route("/game/{game_id}/commit", post(oracle_submit_commit))
-        .route("/game/{game_id}/reveal", post(oracle_submit_reveal))
-        .route("/game/{game_id}/status", get(oracle_get_game_status))
-        .route("/game/{game_id}/result", get(oracle_get_result))
+        .route("/game/:game_id/join", post(oracle_join_game))
+        .route("/game/:game_id/invoice", post(oracle_submit_invoice))
+        .route("/game/:game_id/invoice/:player", get(oracle_get_invoice))
+        .route("/game/:game_id/encrypted-preimage", post(oracle_submit_encrypted_preimage))
+        .route("/game/:game_id/encrypted-preimage/:player", get(oracle_get_encrypted_preimage))
+        .route("/game/:game_id/commit", post(oracle_submit_commit))
+        .route("/game/:game_id/reveal", post(oracle_submit_reveal))
+        .route("/game/:game_id/status", get(oracle_get_game_status))
+        .route("/game/:game_id/result", get(oracle_get_result))
 }
 
 fn create_player_router(get_player: fn(&AppState) -> Arc<PlayerState>) -> Router<Arc<AppState>> {
@@ -1193,13 +1214,13 @@ fn create_player_router(get_player: fn(&AppState) -> Arc<PlayerState>) -> Router
         .route("/game/join", post(move |State(state): State<Arc<AppState>>, body: Json<PlayerJoinGameRequest>| async move {
             player_join_game(State(get_player(&state)), body).await
         }))
-        .route("/game/{game_id}/play", post(move |State(state): State<Arc<AppState>>, path: Path<GameId>, body: Json<PlayRequest>| async move {
+        .route("/game/:game_id/play", post(move |State(state): State<Arc<AppState>>, path: Path<GameId>, body: Json<PlayRequest>| async move {
             player_play(State(get_player(&state)), path, body).await
         }))
-        .route("/game/{game_id}/status", get(move |State(state): State<Arc<AppState>>, path: Path<GameId>| async move {
+        .route("/game/:game_id/status", get(move |State(state): State<Arc<AppState>>, path: Path<GameId>| async move {
             player_get_game_status(State(get_player(&state)), path).await
         }))
-        .route("/game/{game_id}/settle", post(move |State(state): State<Arc<AppState>>, path: Path<GameId>| async move {
+        .route("/game/:game_id/settle", post(move |State(state): State<Arc<AppState>>, path: Path<GameId>| async move {
             player_settle(State(get_player(&state)), path).await
         }))
 }
