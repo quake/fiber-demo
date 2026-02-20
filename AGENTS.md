@@ -45,22 +45,25 @@ cd fiber-escrow && cargo test --test e2e_escrow_flow -- --nocapture --test-threa
 
 **Note:** Services with Web UI must be started from their crate directory for static files to load correctly. All services support the `PORT` environment variable.
 
+#### Escrow Demo (http://localhost:3000)
 ```bash
-# Escrow demo (http://localhost:3000)
 cd fiber-escrow/crates/fiber-escrow-service && cargo run
+```
+Real Fiber nodes: `FIBER_SELLER_RPC_URL=... FIBER_BUYER_RPC_URL=... cargo run`
 
-# With custom port
-cd fiber-escrow/crates/fiber-escrow-service && PORT=3001 cargo run
-
-# Game demo - Combined (Recommended, single command)
+#### Game Demo - Combined (Recommended, single command)
+```bash
 cd fiber-game/crates/fiber-game-demo && cargo run
 # Opens:
 #   Player A: http://localhost:3000/player-a/
 #   Player B: http://localhost:3000/player-b/
+```
+Real Fiber nodes: `FIBER_PLAYER_A_RPC_URL=... FIBER_PLAYER_B_RPC_URL=... cargo run`
 
-# Game demo - Separate services (legacy)
-cd fiber-game/crates/fiber-game-oracle && cargo run -p fiber-game-oracle
-cd fiber-game/crates/fiber-game-player && cargo run -p fiber-game-player
+#### Game Demo - Separate services (legacy)
+```bash
+cd fiber-game/crates/fiber-game-oracle && cargo run
+cd fiber-game/crates/fiber-game-player && cargo run
 ```
 
 ### Two-Player Local Testing
@@ -82,7 +85,7 @@ Then open two browser windows:
 cd fiber-game/crates/fiber-game-oracle && cargo run
 
 # Terminal 2 - Player A (http://localhost:3001)
-cd fiber-game/crates/fiber-game-player && cargo run
+cd fiber-game/crates/fiber-game-player && PORT=3001 cargo run
 
 # Terminal 3 - Player B (http://localhost:3002)
 cd fiber-game/crates/fiber-game-player && PORT=3002 ORACLE_URL=http://localhost:3000 cargo run
@@ -113,7 +116,7 @@ The `scripts/setup-fiber-testnet.sh` script automates setting up two local Fiber
 1. Downloads `fnn` (Fiber Node) v0.7.0 and `ckb-cli` v2.0.0
 2. Creates two CKB accounts using ckb-cli
 3. Displays addresses for funding via [CKB Faucet](https://faucet.nervos.org)
-4. Auto-checks balances and waits for funding (checks every 3 seconds)
+4. Auto-checks balances and waits for funding (checks every 10 seconds)
 5. Starts two local Fiber nodes (NodeA on port 8227, NodeB on port 8229)
 6. Connects NodeA to NodeB directly
 7. Opens a 500 CKB channel between the two local nodes
@@ -122,24 +125,6 @@ The `scripts/setup-fiber-testnet.sh` script automates setting up two local Fiber
 - `curl`, `tar`, `unzip` (for binary downloads)
 - `jq` (for status command)
 - ~1000 CKB total from faucet (only NodeA needs funds to open the channel)
-
-**Directory structure created:**
-```
-testnet-fnn/
-├── bin/
-│   ├── fnn
-│   └── ckb-cli
-├── nodeA/
-│   ├── ckb/
-│   │   ├── key          # Private key
-│   │   ├── address      # CKB testnet address
-│   │   └── lock_arg
-│   ├── config.yml
-│   ├── fnn.log
-│   └── fnn.pid
-└── nodeB/
-    └── (same structure)
-```
 
 ## Code Style Guidelines
 
@@ -218,9 +203,9 @@ pub enum FiberError {
 
 ### Async Traits
 
-Use `#[allow(async_fn_in_trait)]` for async trait methods:
+Use `#[async_trait]` for async trait methods:
 ```rust
-#[allow(async_fn_in_trait)]
+#[async_trait]
 pub trait FiberClient: Send + Sync {
     async fn create_hold_invoice(...) -> Result<HoldInvoice, FiberError>;
 }
@@ -274,7 +259,7 @@ impl Preimage {
     /// Create a new random preimage
     pub fn random() -> Self { ... }
 
-    /// Compute the payment hash (SHA256 of preimage)
+    /// Compute the payment hash (Blake2b-256 of preimage)
     pub fn payment_hash(&self) -> PaymentHash { ... }
 }
 ```
@@ -325,8 +310,10 @@ pub async fn create_order(
 - Oracle generates adaptor signatures for game outcomes
 - Four crates: core library, oracle service, player service, combined demo
 - Combined demo (`fiber-game-demo`) runs Oracle + 2 Players on single port
+- Units: **shannons** (CKB native unit)
 
 ### fiber-escrow
 - Single service with multi-role Web UI
-- Pre-registered demo users: alice, bob, carol
+- Pre-registered demo users: buyer, seller, arbiter
 - Time simulation via `/api/system/tick` for testing timeouts
+- Units: **shannons** (CKB native unit)

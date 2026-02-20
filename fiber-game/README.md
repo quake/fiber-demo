@@ -16,7 +16,7 @@ This demo implements fair two-player games where:
 | Game | Description |
 |------|-------------|
 | Rock-Paper-Scissors | Classic RPS with cryptographic commitments |
-| Guess Number | Player A picks 0-9, Player B guesses |
+| Guess Number | Player A picks 0-99, Player B guesses |
 
 ## Architecture
 
@@ -29,7 +29,8 @@ fiber-game/
     │   ├── games/             # Game definitions (RPS, Guess Number)
     │   └── protocol/          # Game protocol state machine
     ├── fiber-game-oracle/     # Oracle HTTP service
-    └── fiber-game-player/     # Player HTTP service
+    ├── fiber-game-player/     # Player HTTP service
+    └── fiber-game-demo/       # Combined demo service
 ```
 
 ## How It Works
@@ -66,27 +67,66 @@ Player A                  Oracle                  Player B
 
 ## Running the Demo
 
-### Start Services
+The easiest way to run the demo is using the combined service, which starts the Oracle and two Player UIs on a single port.
+
+### 1. Combined Demo (Recommended)
 
 ```bash
-# Terminal 1: Oracle service (http://localhost:3001)
-cargo run -p fiber-game-oracle
-
-# Terminal 2: Player service (http://localhost:3002)
-cargo run -p fiber-game-player
+# Start combined Oracle + 2 Players (http://localhost:3000)
+cd fiber-game/crates/fiber-game-demo && cargo run
 ```
 
-### Run Tests
+Access the player interfaces:
+- **Player A**: [http://localhost:3000/player-a/](http://localhost:3000/player-a/)
+- **Player B**: [http://localhost:3000/player-b/](http://localhost:3000/player-b/)
+
+#### Real Fiber Integration
+To test with real Fiber nodes, set the RPC URLs for each player:
+```bash
+FIBER_PLAYER_A_RPC_URL=http://localhost:8227 \
+FIBER_PLAYER_B_RPC_URL=http://localhost:8229 \
+cargo run
+```
+
+### 2. Separate Services (Standalone)
+
+If you need to run services independently across different machines or ports:
 
 ```bash
-# All tests
+# Terminal 1: Oracle service (http://localhost:3000)
+cd fiber-game/crates/fiber-game-oracle && cargo run
+
+# Terminal 2: Player A (http://localhost:3001)
+cd fiber-game/crates/fiber-game-player && PORT=3001 cargo run
+
+# Terminal 3: Player B (http://localhost:3002)
+cd fiber-game/crates/fiber-game-player && PORT=3002 cargo run
+```
+
+### Configuration
+
+| Env Variable | Description | Default |
+|--------------|-------------|---------|
+| `PORT` | HTTP service port | 3000 |
+| `ORACLE_URL` | URL of the Oracle service (for players) | http://localhost:3000 |
+| `FIBER_RPC_URL` | Fiber node RPC URL (standalone player) | None (Mock mode) |
+| `FIBER_PLAYER_A_RPC_URL` | Fiber node RPC for Player A (demo) | None (Mock mode) |
+| `FIBER_PLAYER_B_RPC_URL` | Fiber node RPC for Player B (demo) | None (Mock mode) |
+
+## Key Concepts
+
+- **Shannons**: All amounts in this demo use **shannons**, the native unit of CKB (1 CKB = 10^8 shannons).
+- **Mock Mode**: By default, the services run in "Mock Mode" with simulated Fiber balances (100,000 shannons initial).
+- **Hold Invoices**: Funds are locked in a Fiber hold invoice when a game starts and only released to the winner upon reveal.
+
+## Run Tests
+
+```bash
+# Run all tests in the workspace
 cargo test
 
-# Specific test
-cargo test test_full_rps_game_a_wins
-
-# With output
-cargo test -- --nocapture
+# Run specific E2E test (requires building crates first)
+cargo test --test e2e_game_flow -- --nocapture
 ```
 
 ## API Endpoints
