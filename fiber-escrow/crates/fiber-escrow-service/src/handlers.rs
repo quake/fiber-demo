@@ -24,6 +24,7 @@ pub struct RegisterRequest {
 pub struct UserResponse {
     pub id: Uuid,
     pub username: String,
+    pub balance_shannons: i64,
 }
 
 impl From<User> for UserResponse {
@@ -31,6 +32,7 @@ impl From<User> for UserResponse {
         Self {
             id: u.id.0,
             username: u.username,
+            balance_shannons: u.balance_shannons,
         }
     }
 }
@@ -39,7 +41,7 @@ impl From<User> for UserResponse {
 pub struct CreateProductRequest {
     pub title: String,
     pub description: String,
-    pub price_sat: u64,
+    pub price_shannons: u64,
 }
 
 #[derive(Serialize)]
@@ -49,7 +51,7 @@ pub struct ProductResponse {
     pub seller_username: Option<String>,
     pub title: String,
     pub description: String,
-    pub price_sat: u64,
+    pub price_shannons: u64,
     pub status: ProductStatus,
 }
 
@@ -74,7 +76,7 @@ pub struct OrderResponse {
     pub product_title: String,
     pub seller_id: Uuid,
     pub buyer_id: Uuid,
-    pub amount_sat: u64,
+    pub amount_shannons: u64,
     pub payment_hash: String,
     pub invoice_string: Option<String>,
     pub status: OrderStatus,
@@ -132,7 +134,7 @@ pub async fn register_user(
     Json(req): Json<RegisterRequest>,
 ) -> impl IntoResponse {
     // Check if username already exists
-    if state.get_user_by_username(&req.username).is_some() {
+    if state.get_user_by_username(&req.username).await.is_some() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "Username already exists"})),
@@ -160,7 +162,7 @@ pub async fn get_current_user(
         }
     };
 
-    match state.get_user(user_id) {
+    match state.get_user(user_id).await {
         Some(user) => (
             StatusCode::OK,
             Json(serde_json::json!(UserResponse::from(user))),
@@ -173,7 +175,7 @@ pub async fn get_current_user(
 }
 
 pub async fn list_users(State(state): State<AppState>) -> impl IntoResponse {
-    let users: Vec<UserResponse> = state.list_users().into_iter().map(Into::into).collect();
+    let users: Vec<UserResponse> = state.list_users().await.into_iter().map(Into::into).collect();
     Json(serde_json::json!({"users": users}))
 }
 
@@ -194,7 +196,7 @@ pub async fn create_product(
         }
     };
 
-    let product = state.create_product(seller_id, req.title, req.description, req.price_sat);
+    let product = state.create_product(seller_id, req.title, req.description, req.price_shannons);
     (
         StatusCode::OK,
         Json(serde_json::json!({"product_id": product.id.0})),
@@ -202,22 +204,19 @@ pub async fn create_product(
 }
 
 pub async fn list_products(State(state): State<AppState>) -> impl IntoResponse {
-    let products: Vec<ProductResponse> = state
-        .list_available_products()
-        .into_iter()
-        .map(|p| {
-            let seller = state.get_user(p.seller_id);
-            ProductResponse {
-                id: p.id.0,
-                seller_id: p.seller_id.0,
-                seller_username: seller.map(|u| u.username),
-                title: p.title,
-                description: p.description,
-                price_sat: p.price_sat,
-                status: p.status,
-            }
-        })
-        .collect();
+    let mut products = Vec::new();
+    for p in state.list_available_products() {
+        let seller = state.get_user(p.seller_id).await;
+        products.push(ProductResponse {
+            id: p.id.0,
+            seller_id: p.seller_id.0,
+            seller_username: seller.map(|u| u.username),
+            title: p.title,
+            description: p.description,
+            price_shannons: p.price_shannons,
+            status: p.status,
+        });
+    }
     Json(serde_json::json!({"products": products}))
 }
 
@@ -244,7 +243,7 @@ pub async fn list_my_products(
             seller_username: None,
             title: p.title,
             description: p.description,
-            price_sat: p.price_sat,
+            price_shannons: p.price_shannons,
             status: p.status,
         })
         .collect();
@@ -263,7 +262,7 @@ fn order_to_response(order: &Order) -> OrderResponse {
         product_title: order.product_title.clone(),
         seller_id: order.seller_id.0,
         buyer_id: order.buyer_id.0,
-        amount_sat: order.amount_sat,
+        amount_shannons: order.amount_shannons,
         payment_hash: order.payment_hash.to_string(),
         invoice_string: order.invoice_string.clone(),
         status: order.status,
@@ -337,7 +336,7 @@ pub async fn create_order(
     // If Fiber client is configured, create hold invoice on seller's node
     let invoice_string = if let Some(fiber_client) = state.seller_fiber_client() {
         match fiber_client
-            .create_hold_invoice(&payment_hash, order.amount_sat, 24 * 60 * 60) // 24 hour expiry
+            .create_hold_invoice(&payment_hash, order.amount_shannons, 24 * 60 * 60) // 24 hour expiry
             .await
         {
             Ok(invoice) => {
@@ -365,7 +364,7 @@ pub async fn create_order(
         Json(serde_json::json!({
             "order_id": order.id.0,
             "payment_hash": order.payment_hash.to_string(),
-            "amount_sat": order.amount_sat,
+            "amount_shannons": order.amount_shannons,
             "expires_at": order.expires_at.to_rfc3339(),
             "invoice_string": invoice_string
         })),

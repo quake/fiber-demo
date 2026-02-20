@@ -124,12 +124,11 @@ impl FiberClient for RpcFiberClient {
     async fn create_hold_invoice(
         &self,
         payment_hash: &PaymentHash,
-        amount_sat: u64,
+        amount: u64,
         expiry_secs: u64,
     ) -> Result<HoldInvoice, FiberError> {
-        // Convert amount from satoshis to shannons (1 sat = 100 shannons in CKB context)
-        // Note: Fiber uses shannons as the base unit
-        let amount_shannons = amount_sat * 100;
+        // amount is in shannons (CKB base unit)
+        let amount_shannons = amount;
 
         // final_expiry_delta is in milliseconds
         // Fiber requires minimum of 9,600,000 ms (160 minutes / 2h40m)
@@ -155,7 +154,7 @@ impl FiberClient for RpcFiberClient {
 
         Ok(HoldInvoice {
             payment_hash: payment_hash.clone(),
-            amount_sat,
+            amount,
             expiry_secs,
             invoice_string: invoice_address,
         })
@@ -256,6 +255,35 @@ impl FiberClient for RpcFiberClient {
             CkbInvoiceStatus::Paid => PaymentStatus::Settled,
             CkbInvoiceStatus::Cancelled | CkbInvoiceStatus::Expired => PaymentStatus::Cancelled,
         })
+    }
+
+    /// Get total local balance across all channels in shannons
+    async fn get_balance(&self) -> Result<u64, FiberError> {
+        // list_channels returns a list of channels
+        let result = self.call("list_channels", json!({})).await?;
+        
+        let channels = result
+            .get("channels")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| FiberError::NetworkError("No channels in response".to_string()))?;
+
+        let mut total_shannons: u64 = 0;
+        for channel in channels {
+            let local_balance_str = channel
+                .get("local_balance")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0x0");
+            
+            // Parse hex string (0x...)
+            let shannons = if local_balance_str.starts_with("0x") {
+                u64::from_str_radix(&local_balance_str[2..], 16).unwrap_or(0)
+            } else {
+                local_balance_str.parse::<u64>().unwrap_or(0)
+            };
+            total_shannons += shannons;
+        }
+
+        Ok(total_shannons)
     }
 }
 

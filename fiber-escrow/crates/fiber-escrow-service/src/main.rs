@@ -36,15 +36,18 @@ async fn main() {
     };
 
     // Buyer's node: sends payments
-    let buyer_rpc_url = if let Ok(url) = std::env::var("FIBER_BUYER_RPC_URL") {
+    let (buyer_client, buyer_rpc_url) = if let Ok(url) = std::env::var("FIBER_BUYER_RPC_URL") {
         tracing::info!("Buyer Fiber RPC enabled: {}", url);
-        Some(url)
+        (
+            Some(Arc::new(fiber_core::RpcFiberClient::new(url.clone()))),
+            Some(url),
+        )
     } else {
         tracing::info!("Buyer Fiber RPC not configured (set FIBER_BUYER_RPC_URL to enable)");
-        None
+        (None, None)
     };
 
-    let state = AppState::with_fiber_clients(seller_client, buyer_rpc_url);
+    let state = AppState::with_fiber_clients(seller_client, buyer_client, buyer_rpc_url);
 
     // Pre-register demo users with role-based names
     state.register_user("buyer".to_string());

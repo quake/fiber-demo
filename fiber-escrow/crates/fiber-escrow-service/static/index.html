@@ -275,14 +275,14 @@
                 <select id="userSelect" onchange="switchUser()">
                     <option value="">Loading...</option>
                 </select>
-                <div class="balance" id="balance">0 sats</div>
+                <div class="balance" id="balance">0 shannons</div>
             </div>
         </header>
 
         <div class="tabs">
-            <button class="tab active" onclick="showTab('market')">Market</button>
-            <button class="tab" onclick="showTab('orders')">My Orders</button>
-            <button class="tab" onclick="showTab('arbiter')">Arbiter</button>
+            <button id="tab-market" class="tab active" onclick="showTab('market')">Market</button>
+            <button id="tab-orders" class="tab" onclick="showTab('orders')">My Orders</button>
+            <button id="tab-arbiter" class="tab" onclick="showTab('arbiter')">Arbiter</button>
         </div>
 
         <!-- Market Tab -->
@@ -425,28 +425,74 @@
         // User management
         async function loadUsers() {
             const data = await api('GET', '/users');
-            users = data.users || [];
+            let rawUsers = data.users || [];
+            
+            // Sort users in order: buyer, seller, arbiter
+            const order = ['buyer', 'seller', 'arbiter'];
+            users = rawUsers.sort((a, b) => {
+                let idxA = order.indexOf(a.username.toLowerCase());
+                let idxB = order.indexOf(b.username.toLowerCase());
+                if (idxA === -1) idxA = 99;
+                if (idxB === -1) idxB = 99;
+                return idxA - idxB;
+            });
+
             const select = document.getElementById('userSelect');
             select.innerHTML = users.map(u => 
                 `<option value="${u.id}">${u.username}</option>`
             ).join('');
             if (users.length > 0) {
                 currentUserId = users[0].id;
+                updateTabVisibility();
                 updateBalance();
             }
         }
 
         async function switchUser() {
             currentUserId = document.getElementById('userSelect').value;
+            updateTabVisibility();
             await updateBalance();
             refresh();
+        }
+
+        function updateTabVisibility() {
+            const user = users.find(u => u.id === currentUserId);
+            if (!user) return;
+
+            const username = user.username.toLowerCase();
+            const tabMarket = document.getElementById('tab-market');
+            const tabOrders = document.getElementById('tab-orders');
+            const tabArbiter = document.getElementById('tab-arbiter');
+            const balanceElement = document.getElementById('balance');
+
+            // Default: hide everything
+            tabMarket.style.display = 'none';
+            tabOrders.style.display = 'none';
+            tabArbiter.style.display = 'none';
+            balanceElement.style.display = 'block';
+
+            if (username === 'arbiter') {
+                tabArbiter.style.display = 'block';
+                balanceElement.style.display = 'none';
+                const activeTab = document.querySelector('.tab-content.active').id;
+                if (activeTab !== 'arbiter') showTab('arbiter');
+            } else if (username === 'seller') {
+                tabOrders.style.display = 'block';
+                const activeTab = document.querySelector('.tab-content.active').id;
+                if (activeTab !== 'orders') showTab('orders');
+            } else if (username === 'buyer') {
+                tabMarket.style.display = 'block';
+                tabOrders.style.display = 'block';
+                const activeTab = document.querySelector('.tab-content.active').id;
+                if (activeTab === 'arbiter') showTab('market');
+            }
         }
 
         async function updateBalance() {
             if (!currentUserId) return;
             const data = await api('GET', '/user/me');
-            if (data.balance_sat !== undefined) {
-                document.getElementById('balance').textContent = `${data.balance_sat.toLocaleString()} sats`;
+            if (data.balance_shannons !== undefined) {
+                document.getElementById('balance').textContent = `${data.balance_shannons.toLocaleString()} shannons`;
             }
         }
 
@@ -468,7 +514,7 @@
                             <div class="card-title">${escapeHtml(p.title)}</div>
                             <div class="card-subtitle">by ${escapeHtml(p.seller_username || 'Unknown')}</div>
                         </div>
-                        <div class="price">${p.price_sat.toLocaleString()} sats</div>
+                        <div class="price">${p.price_shannons.toLocaleString()} shannons</div>
                     </div>
                     <p style="color: #aaa; font-size: 0.9rem;">${escapeHtml(p.description)}</p>
                     <div class="actions">
@@ -492,7 +538,7 @@
 
             // Show modal with loading state
             document.getElementById('purchaseProductTitle').textContent = product.title;
-            document.getElementById('purchasePrice').textContent = product.price_sat.toLocaleString();
+            document.getElementById('purchasePrice').textContent = product.price_shannons.toLocaleString();
             document.getElementById('purchaseInvoiceSection').style.display = 'none';
             document.getElementById('purchaseLoading').style.display = 'block';
             document.getElementById('purchaseError').style.display = 'none';
@@ -627,7 +673,7 @@
                         </div>
                         <div>
                             <span class="status ${o.status}">${formatStatus(o.status)}</span>
-                            <div class="price" style="margin-top: 4px;">${o.amount_sat.toLocaleString()} sats</div>
+                            <div class="price" style="margin-top: 4px;">${o.amount_shannons.toLocaleString()} shannons</div>
                         </div>
                     </div>
                     ${o.invoice_string ? `<p style="color: #888; font-size: 0.75rem; word-break: break-all; margin-bottom: 8px;">Invoice: ${escapeHtml(o.invoice_string.slice(0, 50))}...</p>` : ''}
@@ -796,7 +842,7 @@
                             <div class="card-title">${escapeHtml(o.product_title)}</div>
                             <div class="card-subtitle">Order #${o.id.slice(0, 8)}</div>
                         </div>
-                        <div class="price">${o.amount_sat.toLocaleString()} sats</div>
+                        <div class="price">${o.amount_shannons.toLocaleString()} shannons</div>
                     </div>
                     <p style="color: #e74c3c; margin: 8px 0; font-size: 0.9rem;">
                         <strong>Dispute reason:</strong> ${escapeHtml(o.dispute?.reason || 'N/A')}
