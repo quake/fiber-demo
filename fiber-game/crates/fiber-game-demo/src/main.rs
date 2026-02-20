@@ -192,6 +192,7 @@ struct OracleJoinGameRequest {
 #[derive(Serialize)]
 struct OracleJoinGameResponse {
     status: String,
+    game_type: GameType,
     oracle_pubkey: String,
     commitment_point: String,
     oracle_commitment: Option<String>,
@@ -386,6 +387,7 @@ async fn oracle_join_game(
 
     Ok(Json(OracleJoinGameResponse {
         status: "joined".to_string(),
+        game_type: game.game_type,
         oracle_pubkey: hex::encode(state.oracle.public_key.serialize()),
         commitment_point: hex::encode(game.commitment_point.serialize()),
         oracle_commitment: game.oracle_commitment.map(hex::encode),
@@ -1135,6 +1137,10 @@ async fn player_join_game(
 
     let amount_shannons = resp["amount_shannons"].as_u64().unwrap_or(0);
 
+    // Parse game_type from Oracle response
+    let game_type: GameType = serde_json::from_value(resp["game_type"].clone())
+        .unwrap_or(GameType::RockPaperScissors);
+
     let preimage = Preimage::random();
     let payment_hash = preimage.payment_hash();
     let salt = Salt::random();
@@ -1225,7 +1231,7 @@ async fn player_join_game(
     // Save game state with invoice info
     let game_state = PlayerGameState {
         role: Player::B,
-        game_type: GameType::RockPaperScissors,
+        game_type,
         amount_shannons,
         preimage,
         payment_hash,
