@@ -67,7 +67,7 @@
 {
   "order_id": "uuid",
   "payment_hash": "0x...",
-  "amount_sat": 1000,
+  "amount_shannons": 1000,
   "expires_at": "2026-02-20T...",
   "invoice_string": "fibt1..."  // NEW: if Fiber enabled
 }

@@ -255,7 +255,7 @@
                 <strong>Player:</strong> <span id="playerName">Player A</span>
             </div>
             <div class="balance">
-                <span id="balance">0</span> sats
+                <span id="balance">0</span> shannons
             </div>
         </div>
 
@@ -266,7 +266,7 @@
                     <option value="RockPaperScissors">Rock Paper Scissors</option>
                     <option value="GuessNumber">Guess the Number</option>
                 </select>
-                <input type="number" id="amount" placeholder="Amount (sats)" value="1000" min="1">
+                <input type="number" id="amount" placeholder="Amount (shannons)" value="1000" min="1">
                 <button class="btn" onclick="createGame()">Create Game</button>
             </div>
         </div>
@@ -329,7 +329,7 @@
                     <div class="game-item">
                         <div class="game-info">
                             <span class="game-type">${formatGameType(g.game_type)}</span>
-                            <span class="amount">${g.amount_sat} sats</span>
+                            <span class="amount">${g.amount_shannons} shannons</span>
                         </div>
                         <button class="btn" onclick="joinGame('${g.game_id}')">Join</button>
                     </div>
@@ -355,7 +355,7 @@
                     <div class="game-item">
                         <div class="game-info">
                             <span class="game-type">${formatGameType(g.game_type)}</span>
-                            <span class="amount">${g.amount_sat} sats</span>
+                            <span class="amount">${g.amount_shannons} shannons</span>
                             <span>Role: ${g.role}</span>
                             <span>Phase: ${formatPhase(g.phase)}</span>
                         </div>
@@ -402,7 +402,7 @@
                 const resp = await fetch(`${API_BASE}/game/create`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ game_type: gameType, amount_sat: amount })
+                    body: JSON.stringify({ game_type: gameType, amount_shannons: amount })
                 });
                 const data = await resp.json();
                 alert(`Game created! ID: ${data.game_id}`);
@@ -603,11 +603,11 @@
                 
                 let message = '';
                 if (data.amount_won > 0) {
-                    message = `You won ${data.amount_won} sats!`;
+                    message = `You won ${data.amount_won} shannons!`;
                 } else if (data.amount_won < 0) {
-                    message = `You lost ${Math.abs(data.amount_won)} sats.`;
+                    message = `You lost ${Math.abs(data.amount_won)} shannons.`;
                 } else {
-                    message = "It's a draw. No sats won or lost.";
+                    message = "It's a draw. No shannons won or lost.";
                 }
                 
                 alert(message);

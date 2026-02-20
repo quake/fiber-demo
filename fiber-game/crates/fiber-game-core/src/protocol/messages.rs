@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HoldInvoiceMessage {
     pub payment_hash: PaymentHash,
-    pub amount_sat: u64,
+    pub amount_shannons: u64,
     pub expiry_secs: u64,
 }
 
@@ -111,7 +111,7 @@ mod tests {
         let preimage = Preimage::random();
         let msg = HoldInvoiceMessage {
             payment_hash: preimage.payment_hash(),
-            amount_sat: 1000,
+            amount_shannons: 1000,
             expiry_secs: 3600,
         };
 
@@ -119,6 +119,6 @@ mod tests {
         let deserialized: HoldInvoiceMessage = serde_json::from_str(&json).unwrap();
 
         assert_eq!(msg.payment_hash, deserialized.payment_hash);
-        assert_eq!(msg.amount_sat, deserialized.amount_sat);
+        assert_eq!(msg.amount_shannons, deserialized.amount_shannons);
     }
 }

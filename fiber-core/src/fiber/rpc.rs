@@ -5,6 +5,7 @@
 
 use crate::crypto::{PaymentHash, Preimage};
 use crate::fiber::traits::{FiberClient, FiberError, HoldInvoice, PaymentId, PaymentStatus};
+use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -119,7 +120,12 @@ impl RpcFiberClient {
     }
 }
 
+#[async_trait]
 impl FiberClient for RpcFiberClient {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     /// Create a hold invoice using payment_hash (without preimage)
     async fn create_hold_invoice(
         &self,

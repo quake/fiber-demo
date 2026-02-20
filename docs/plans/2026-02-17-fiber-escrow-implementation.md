@@ -464,7 +464,7 @@ impl Default for OrderId {
 pub struct User {
     pub id: UserId,
     pub username: String,
-    pub balance_sat: i64,
+    pub balance_shannons: i64,
 }
 
 impl User {
@@ -472,7 +472,7 @@ impl User {
         Self {
             id: UserId::new(),
             username,
-            balance_sat: 10000, // Initial balance for demo
+            balance_shannons: 10000, // Initial balance for demo
         }
     }
 }
@@ -492,19 +492,19 @@ pub struct Product {
     pub seller_id: UserId,
     pub title: String,
     pub description: String,
-    pub price_sat: u64,
+    pub price_shannons: u64,
     pub status: ProductStatus,
     pub created_at: DateTime<Utc>,
 }
 
 impl Product {
-    pub fn new(seller_id: UserId, title: String, description: String, price_sat: u64) -> Self {
+    pub fn new(seller_id: UserId, title: String, description: String, price_shannons: u64) -> Self {
         Self {
             id: ProductId::new(),
             seller_id,
             title,
             description,
-            price_sat,
+            price_shannons,
             status: ProductStatus::Available,
             created_at: Utc::now(),
         }
@@ -547,7 +547,7 @@ pub struct Order {
     pub product_title: String,
     pub seller_id: UserId,
     pub buyer_id: UserId,
-    pub amount_sat: u64,
+    pub amount_shannons: u64,
 
     // Arbiter holds preimage
     #[serde(skip_serializing)]
@@ -579,7 +579,7 @@ impl Order {
             product_title: product.title.clone(),
             seller_id: product.seller_id,
             buyer_id,
-            amount_sat: product.price_sat,
+            amount_shannons: product.price_shannons,
             preimage,
             payment_hash,
             status: OrderStatus::WaitingPayment,
@@ -703,14 +703,14 @@ impl AppState {
     pub fn adjust_balance(&self, user_id: UserId, amount: i64) {
         let mut inner = self.inner.lock().unwrap();
         if let Some(user) = inner.users.get_mut(&user_id) {
-            user.balance_sat += amount;
+            user.balance_shannons += amount;
         }
     }
 
     // Product operations
 
-    pub fn create_product(&self, seller_id: UserId, title: String, description: String, price_sat: u64) -> Product {
-        let product = Product::new(seller_id, title, description, price_sat);
+    pub fn create_product(&self, seller_id: UserId, title: String, description: String, price_shannons: u64) -> Product {
+        let product = Product::new(seller_id, title, description, price_shannons);
         let mut inner = self.inner.lock().unwrap();
         inner.products.insert(product.id, product.clone());
         product
@@ -943,7 +943,7 @@ pub struct RegisterRequest {
 pub struct UserResponse {
     pub id: Uuid,
     pub username: String,
-    pub balance_sat: i64,
+    pub balance_shannons: i64,
 }
 
 impl From<User> for UserResponse {
@@ -951,7 +951,7 @@ impl From<User> for UserResponse {
         Self {
             id: u.id.0,
             username: u.username,
-            balance_sat: u.balance_sat,
+            balance_shannons: u.balance_shannons,
         }
     }
 }
@@ -960,7 +960,7 @@ impl From<User> for UserResponse {
 pub struct CreateProductRequest {
     pub title: String,
     pub description: String,
-    pub price_sat: u64,
+    pub price_shannons: u64,
 }
 
 #[derive(Serialize)]
@@ -970,7 +970,7 @@ pub struct ProductResponse {
     pub seller_username: Option<String>,
     pub title: String,
     pub description: String,
-    pub price_sat: u64,
+    pub price_shannons: u64,
     pub status: ProductStatus,
 }
 
@@ -986,7 +986,7 @@ pub struct OrderResponse {
     pub product_title: String,
     pub seller_id: Uuid,
     pub buyer_id: Uuid,
-    pub amount_sat: u64,
+    pub amount_shannons: u64,
     pub payment_hash: String,
     pub status: OrderStatus,
     pub created_at: String,
@@ -1099,7 +1099,7 @@ pub async fn create_product(
         }
     };
 
-    let product = state.create_product(seller_id, req.title, req.description, req.price_sat);
+    let product = state.create_product(seller_id, req.title, req.description, req.price_shannons);
     (
         StatusCode::OK,
         Json(serde_json::json!({"product_id": product.id.0})),
@@ -1118,7 +1118,7 @@ pub async fn list_products(State(state): State<AppState>) -> impl IntoResponse {
                 seller_username: seller.map(|u| u.username),
                 title: p.title,
                 description: p.description,
-                price_sat: p.price_sat,
+                price_shannons: p.price_shannons,
                 status: p.status,
             }
         })
@@ -1149,7 +1149,7 @@ pub async fn list_my_products(
             seller_username: None,
             title: p.title,
             description: p.description,
-            price_sat: p.price_sat,
+            price_shannons: p.price_shannons,
             status: p.status,
         })
         .collect();
@@ -1165,7 +1165,7 @@ fn order_to_response(order: &Order) -> OrderResponse {
         product_title: order.product_title.clone(),
         seller_id: order.seller_id.0,
         buyer_id: order.buyer_id.0,
-        amount_sat: order.amount_sat,
+        amount_shannons: order.amount_shannons,
         payment_hash: order.payment_hash.to_string(),
         status: order.status,
         created_at: order.created_at.to_rfc3339(),
@@ -1229,7 +1229,7 @@ pub async fn create_order(
         Json(serde_json::json!({
             "order_id": order.id.0,
             "payment_hash": order.payment_hash.to_string(),
-            "amount_sat": order.amount_sat,
+            "amount_shannons": order.amount_shannons,
             "expires_at": order.expires_at.to_rfc3339()
         })),
     )
@@ -1299,7 +1299,7 @@ pub async fn pay_order(
 
     // Check buyer balance
     let buyer = state.get_user(user_id).unwrap();
-    if buyer.balance_sat < order.amount_sat as i64 {
+    if buyer.balance_shannons < order.amount_shannons as i64 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "Insufficient balance"})),
@@ -1307,7 +1307,7 @@ pub async fn pay_order(
     }
 
     // Lock buyer funds (simulated hold invoice)
-    state.adjust_balance(user_id, -(order.amount_sat as i64));
+    state.adjust_balance(user_id, -(order.amount_shannons as i64));
     state.update_order_status(order_id, OrderStatus::Funded);
 
     (
@@ -1405,7 +1405,7 @@ pub async fn confirm_order(
     }
 
     // Release funds to seller
-    state.adjust_balance(order.seller_id, order.amount_sat as i64);
+    state.adjust_balance(order.seller_id, order.amount_shannons as i64);
     state.update_order_status(order_id, OrderStatus::Completed);
 
     // Get preimage for response
@@ -1519,11 +1519,11 @@ pub async fn resolve_dispute(
     match resolution {
         DisputeResolution::ToSeller => {
             // Release funds to seller
-            state.adjust_balance(order.seller_id, order.amount_sat as i64);
+            state.adjust_balance(order.seller_id, order.amount_shannons as i64);
         }
         DisputeResolution::ToBuyer => {
             // Refund buyer
-            state.adjust_balance(order.buyer_id, order.amount_sat as i64);
+            state.adjust_balance(order.buyer_id, order.amount_shannons as i64);
             // Mark product as available again
             state.mark_product_available(order.product_id);
         }
@@ -1551,7 +1551,7 @@ pub async fn tick(
     // Release funds for expired orders
     for order_id in &expired_order_ids {
         if let Some(order) = state.get_order(*order_id) {
-            state.adjust_balance(order.seller_id, order.amount_sat as i64);
+            state.adjust_balance(order.seller_id, order.amount_shannons as i64);
         }
     }
 

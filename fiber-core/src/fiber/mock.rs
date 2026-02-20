@@ -1,6 +1,7 @@
 //! Mock Fiber client for testing.
 
 use super::traits::{FiberClient, FiberError, HoldInvoice, PaymentId, PaymentStatus};
+use async_trait::async_trait;
 use crate::crypto::{PaymentHash, Preimage};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -78,7 +79,12 @@ impl MockFiberClient {
     }
 }
 
+#[async_trait]
 impl FiberClient for MockFiberClient {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn create_hold_invoice(
         &self,
         payment_hash: &PaymentHash,
@@ -236,7 +242,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(invoice.amount_sat, 1000);
+        assert_eq!(invoice.amount, 1000);
 
         // Check status is Pending
         let status = client.get_payment_status(&payment_hash).await.unwrap();

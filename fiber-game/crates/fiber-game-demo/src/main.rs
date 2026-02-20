@@ -18,7 +18,7 @@ use axum::{
 };
 use fiber_game_core::{
     crypto::{Commitment, EncryptedPreimage, PaymentHash, Preimage, Salt},
-    fiber::MockFiberClient,
+    fiber::{FiberClient, MockFiberClient, RpcFiberClient},
     games::{GameAction, GameJudge, GameType, OracleSecret},
     protocol::{GameId, GameResult, Player},
 };
@@ -75,7 +75,7 @@ struct OracleState {
 #[allow(dead_code)]
 struct OracleGameState {
     game_type: GameType,
-    amount_sat: u64,
+    amount_shannons: u64,
     status: OracleGameStatus,
     commitment_point: secp256k1::PublicKey,
     oracle_secret: Option<OracleSecret>,
@@ -151,7 +151,7 @@ struct OraclePubkeyResponse {
 struct AvailableGame {
     game_id: GameId,
     game_type: GameType,
-    amount_sat: u64,
+    amount_shannons: u64,
     created_at_secs: u64,
 }
 
@@ -164,7 +164,7 @@ struct OracleAvailableGamesResponse {
 struct OracleCreateGameRequest {
     game_type: GameType,
     player_a_id: Uuid,
-    amount_sat: u64,
+    amount_shannons: u64,
 }
 
 #[derive(Serialize)]
@@ -277,7 +277,7 @@ async fn oracle_get_available_games(
         .map(|(id, g)| AvailableGame {
             game_id: *id,
             game_type: g.game_type,
-            amount_sat: g.amount_sat,
+            amount_shannons: g.amount_shannons,
             created_at_secs: g.created_at.elapsed().as_secs(),
         })
         .collect();
@@ -302,7 +302,7 @@ async fn oracle_create_game(
 
     let game_state = OracleGameState {
         game_type: req.game_type,
-        amount_sat: req.amount_sat,
+        amount_shannons: req.amount_shannons,
         status: OracleGameStatus::WaitingForOpponent,
         commitment_point,
         oracle_secret,
@@ -595,7 +595,7 @@ struct PlayerState {
     player_name: String,
     oracle_url: String,
     http_client: Client,
-    fiber_client: MockFiberClient,
+    fiber_client: Arc<dyn FiberClient>,
     games: RwLock<HashMap<GameId, PlayerGameState>>,
 }
 
@@ -604,7 +604,7 @@ struct PlayerState {
 struct PlayerGameState {
     role: Player,
     game_type: GameType,
-    amount_sat: u64,
+    amount_shannons: u64,
     preimage: Preimage,
     payment_hash: PaymentHash,
     salt: Salt,
@@ -632,13 +632,13 @@ enum PlayerGamePhase {
 }
 
 impl PlayerState {
-    fn new(player_id: Uuid, player_name: String, oracle_url: String) -> Self {
+    fn new(player_id: Uuid, player_name: String, oracle_url: String, fiber_client: Arc<dyn FiberClient>) -> Self {
         Self {
             player_id,
             player_name,
             oracle_url,
             http_client: Client::new(),
-            fiber_client: MockFiberClient::new(100_000),
+            fiber_client,
             games: RwLock::new(HashMap::new()),
         }
     }
@@ -659,7 +659,7 @@ struct PlayerInfoResponse {
 struct PlayerAvailableGameResponse {
     game_id: GameId,
     game_type: GameType,
-    amount_sat: u64,
+    amount_shannons: u64,
 }
 
 #[derive(Serialize)]
@@ -673,7 +673,7 @@ struct MyGameResponse {
     game_type: GameType,
     role: Player,
     phase: PlayerGamePhase,
-    amount_sat: u64,
+    amount_shannons: u64,
 }
 
 #[derive(Serialize)]
@@ -684,7 +684,7 @@ struct MyGamesResponse {
 #[derive(Deserialize)]
 struct PlayerCreateGameRequest {
     game_type: GameType,
-    amount_sat: u64,
+    amount_shannons: u64,
 }
 
 #[derive(Serialize)]
@@ -731,12 +731,14 @@ struct SettleResponse {
 // Player Route Handlers (Generic for both Player A and B)
 // ============================================================================
 
-async fn player_get_info(State(player): State<Arc<PlayerState>>) -> Json<PlayerInfoResponse> {
-    Json(PlayerInfoResponse {
+async fn player_get_info(State(player): State<Arc<PlayerState>>) -> Result<Json<PlayerInfoResponse>, AppError> {
+    let balance = player.fiber_client.get_balance().await
+        .map_err(|e| AppError(format!("Failed to get balance: {}", e)))?;
+    Ok(Json(PlayerInfoResponse {
         player_id: player.player_id,
         player_name: player.player_name.clone(),
-        balance: player.fiber_client.balance(),
-    })
+        balance,
+    }))
 }
 
 async fn player_get_available_games(
@@ -760,7 +762,7 @@ async fn player_get_available_games(
         .map(|g| PlayerAvailableGameResponse {
             game_id: serde_json::from_value(g["game_id"].clone()).unwrap(),
             game_type: serde_json::from_value(g["game_type"].clone()).unwrap(),
-            amount_sat: g["amount_sat"].as_u64().unwrap_or(0),
+            amount_shannons: g["amount_shannons"].as_u64().unwrap_or(0),
         })
         .collect();
 
@@ -801,7 +803,7 @@ async fn player_get_my_games(State(player): State<Arc<PlayerState>>) -> Json<MyG
             game_type: g.game_type,
             role: g.role,
             phase: g.phase,
-            amount_sat: g.amount_sat,
+            amount_shannons: g.amount_shannons,
         })
         .collect();
 
@@ -817,7 +819,7 @@ async fn player_create_game(
     let body = serde_json::json!({
         "game_type": req.game_type,
         "player_a_id": player.player_id,
-        "amount_sat": req.amount_sat,
+        "amount_shannons": req.amount_shannons,
     });
 
     let resp: serde_json::Value = player
@@ -849,7 +851,7 @@ async fn player_create_game(
     let game_state = PlayerGameState {
         role: Player::A,
         game_type: req.game_type,
-        amount_sat: req.amount_sat,
+        amount_shannons: req.amount_shannons,
         preimage,
         payment_hash,
         salt,
@@ -907,7 +909,7 @@ async fn player_join_game(
     let game_state = PlayerGameState {
         role: Player::B,
         game_type: GameType::RockPaperScissors,
-        amount_sat: 0,
+        amount_shannons: 0,
         preimage,
         payment_hash,
         salt,
@@ -1118,15 +1120,20 @@ async fn player_settle(
         }
 
         let amount_won = match (result, game.role) {
-            (GameResult::AWins, Player::A) | (GameResult::BWins, Player::B) => game.amount_sat as i64,
-            (GameResult::BWins, Player::A) | (GameResult::AWins, Player::B) => -(game.amount_sat as i64),
+            (GameResult::AWins, Player::A) | (GameResult::BWins, Player::B) => game.amount_shannons as i64,
+            (GameResult::BWins, Player::A) | (GameResult::AWins, Player::B) => -(game.amount_shannons as i64),
             (GameResult::Draw, _) => 0,
         };
 
         (result, amount_won)
     };
 
-    player.fiber_client.adjust_balance(amount_won);
+    // Adjust balance if using MockFiberClient
+    if let Some(mock_client) = player.fiber_client.as_any().downcast_ref::<MockFiberClient>() {
+        mock_client.adjust_balance(amount_won);
+    } else {
+        info!("Real Fiber settlement would happen here for amount: {}", amount_won);
+    }
 
     info!("{}: Settled game {:?}: amount_won = {}", player.player_name, game_id, amount_won);
 
@@ -1238,15 +1245,40 @@ async fn main() {
     let player_a_id = Uuid::new_v4();
     let player_b_id = Uuid::new_v4();
 
+    // Check for real Fiber clients
+    let fiber_client_a: Arc<dyn FiberClient> = if let Ok(url) = std::env::var("FIBER_PLAYER_A_RPC_URL") {
+        info!("Player A using Fiber RPC: {}", url);
+        Arc::new(RpcFiberClient::new(url))
+    } else {
+        info!("Player A using MockFiberClient (set FIBER_PLAYER_A_RPC_URL to enable real Fiber integration)");
+        Arc::new(MockFiberClient::new(100_000))
+    };
+
+    let fiber_client_b: Arc<dyn FiberClient> = if let Ok(url) = std::env::var("FIBER_PLAYER_B_RPC_URL") {
+        info!("Player B using Fiber RPC: {}", url);
+        Arc::new(RpcFiberClient::new(url))
+    } else {
+        info!("Player B using MockFiberClient (set FIBER_PLAYER_B_RPC_URL to enable real Fiber integration)");
+        Arc::new(MockFiberClient::new(100_000))
+    };
+
     let state = Arc::new(AppState {
         oracle: OracleState::new(),
-        player_a: Arc::new(PlayerState::new(player_a_id, "Player A".to_string(), oracle_url.clone())),
-        player_b: Arc::new(PlayerState::new(player_b_id, "Player B".to_string(), oracle_url)),
+        player_a: Arc::new(PlayerState::new(player_a_id, "Player A".to_string(), oracle_url.clone(), fiber_client_a)),
+        player_b: Arc::new(PlayerState::new(player_b_id, "Player B".to_string(), oracle_url, fiber_client_b)),
     });
 
     info!("Oracle public key: {}", hex::encode(state.oracle.public_key.serialize()));
-    info!("Player A ID: {} (balance: {} sats)", player_a_id, state.player_a.fiber_client.balance());
-    info!("Player B ID: {} (balance: {} sats)", player_b_id, state.player_b.fiber_client.balance());
+    
+    // Asynchronously log balances
+    match state.player_a.fiber_client.get_balance().await {
+        Ok(bal) => info!("Player A ID: {} (balance: {} shannons)", player_a_id, bal),
+        Err(e) => info!("Player A balance error: {}", e),
+    }
+    match state.player_b.fiber_client.get_balance().await {
+        Ok(bal) => info!("Player B ID: {} (balance: {} shannons)", player_b_id, bal),
+        Err(e) => info!("Player B balance error: {}", e),
+    }
 
     let app = create_app(state);
 
