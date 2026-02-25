@@ -730,6 +730,8 @@ struct PlayerGameState {
     opponent_invoice_string: Option<String>,
     /// Whether the frontend has reported paying opponent's invoice
     paid_opponent: bool,
+    /// Oracle's secret number for Guess Number games (revealed with result)
+    oracle_secret_number: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -839,6 +841,9 @@ struct PlayerGameStatusResponse {
     opponent_preimage: Option<String>,
     /// My payment_hash (hex) — needed for settle/cancel
     my_payment_hash: Option<String>,
+    /// Oracle's secret number for Guess Number games
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oracle_secret_number: Option<u8>,
 }
 
 #[derive(Serialize)]
@@ -1065,6 +1070,7 @@ async fn player_create_game(
         my_invoice_string: None,
         opponent_invoice_string: None,
         paid_opponent: false,
+        oracle_secret_number: None,
     };
 
     player.games.write().unwrap().insert(game_id, game_state);
@@ -1219,6 +1225,7 @@ async fn player_join_game(
         my_invoice_string: None,
         opponent_invoice_string: None,
         paid_opponent: false,
+        oracle_secret_number: None,
     };
 
     player.games.write().unwrap().insert(req.game_id, game_state);
@@ -1435,6 +1442,13 @@ async fn player_get_game_status(
                 if let Some(opp_action) = game_data.get(opp_action_key) {
                     game.opponent_action = serde_json::from_value(opp_action.clone()).ok();
                 }
+
+                // Extract oracle's secret number for Guess Number games
+                if let Some(oracle_secret) = game_data.get("oracle_secret") {
+                    if let Some(secret_num) = oracle_secret.get("secret_number").and_then(|v| v.as_u64()) {
+                        game.oracle_secret_number = Some(secret_num as u8);
+                    }
+                }
             }
 
             // Extract opponent's preimage if we won (Oracle returns it)
@@ -1496,6 +1510,7 @@ async fn player_get_game_status(
         opponent_payment_hash: opponent_payment_hash_hex,
         opponent_preimage: opponent_preimage_hex,
         my_payment_hash: my_payment_hash_hex,
+        oracle_secret_number: game.oracle_secret_number,
     }))
 }
 

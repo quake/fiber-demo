@@ -864,14 +864,11 @@
                         <p style="margin: 15px 0; color: #ccc;">
                             You: <strong>${myAction}</strong> vs Opponent: <strong>${oppAction}</strong>
                         </p>
+                        ${status.oracle_secret_number != null ? `<p style="margin: 5px 0; color: #aaa;">Oracle's Secret Number: <strong style="color: var(--highlight);">${status.oracle_secret_number}</strong></p>` : ''}
                         ${settleSection}
                         <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                     </div>
                 `;
-                return;
-            }
-            
-            // Otherwise show waiting state
             content.innerHTML = `
                 <div class="status">
                     <p>Phase: ${formatPhase(status.phase)}</p>
