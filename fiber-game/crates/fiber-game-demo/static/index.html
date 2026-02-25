@@ -310,7 +310,118 @@
     </div>
 
     <script>
-        // Current player selection
+        // ====================================================================
+        // Fiber RPC helpers — all Fiber node calls are made from the browser
+        // ====================================================================
+
+        // Fiber RPC URL per player (fetched from backend at startup)
+        let fiberRpcUrls = { 'player-a': null, 'player-b': null };
+
+        // Track which games already had invoices created (avoid duplicate calls)
+        const invoiceCreatedFor = new Set();
+        // Track which games already had payments sent
+        const paymentSentFor = new Set();
+
+        /**
+         * Generic JSON-RPC call to a Fiber node.
+         * Fiber RPC expects params wrapped in an array: [{ ... }]
+         */
+        async function fiberRpc(rpcUrl, method, params) {
+            const body = {
+                jsonrpc: '2.0',
+                id: 1,
+                method,
+                params: [params],
+            };
+            console.log(`[FiberRPC] ${method} ->`, JSON.stringify(body));
+            const resp = await fetch(rpcUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            console.log(`[FiberRPC] ${method} <-`, JSON.stringify(data));
+            if (data.error) {
+                throw new Error(data.error.message || JSON.stringify(data.error));
+            }
+            return data.result;
+        }
+
+        /**
+         * Create a hold invoice (new_invoice) on the player's Fiber node.
+         * paymentHash must be 0x-prefixed hex (32 bytes).
+         */
+        async function fiberNewInvoice(rpcUrl, paymentHash, amountShannons, description) {
+            const FINAL_EXPIRY_DELTA_MS = 9_600_000; // 160 minutes (Fiber minimum)
+            const EXPIRY_SECS = 3600;
+            const result = await fiberRpc(rpcUrl, 'new_invoice', {
+                amount: '0x' + amountShannons.toString(16),
+                currency: 'Fibt',
+                payment_hash: paymentHash,
+                expiry: '0x' + EXPIRY_SECS.toString(16),
+                final_expiry_delta: '0x' + FINAL_EXPIRY_DELTA_MS.toString(16),
+                description: description || 'Fiber Game Payment',
+            });
+            return result.invoice_address; // the BOLT11-like invoice string
+        }
+
+        /**
+         * Pay an invoice via send_payment.
+         */
+        async function fiberSendPayment(rpcUrl, invoiceString) {
+            const result = await fiberRpc(rpcUrl, 'send_payment', {
+                invoice: invoiceString,
+            });
+            const status = result.status || 'unknown';
+            if (['success', 'inflight', 'created'].includes(status)) {
+                return result;
+            }
+            throw new Error(`Payment failed: ${result.failed_error || status}`);
+        }
+
+        /**
+         * Settle a hold invoice with preimage (claim held funds).
+         * Both paymentHash and preimage must be 0x-prefixed hex.
+         */
+        async function fiberSettleInvoice(rpcUrl, paymentHash, preimage) {
+            return await fiberRpc(rpcUrl, 'settle_invoice', {
+                payment_hash: paymentHash,
+                payment_preimage: preimage,
+            });
+        }
+
+        /**
+         * Cancel a hold invoice (refund held funds).
+         * paymentHash must be 0x-prefixed hex.
+         */
+        async function fiberCancelInvoice(rpcUrl, paymentHash) {
+            return await fiberRpc(rpcUrl, 'cancel_invoice', {
+                payment_hash: paymentHash,
+            });
+        }
+
+        /**
+         * Get total local balance across all channels (in shannons).
+         */
+        async function fiberGetBalance(rpcUrl) {
+            const result = await fiberRpc(rpcUrl, 'list_channels', {});
+            const channels = result.channels || [];
+            let total = 0;
+            for (const ch of channels) {
+                const hex = ch.local_balance || '0x0';
+                total += parseInt(hex, 16) || 0;
+            }
+            return total;
+        }
+
+        function getFiberRpcUrl() {
+            return fiberRpcUrls[currentPlayer];
+        }
+
+        // ====================================================================
+        // App state
+        // ====================================================================
+
         let currentPlayer = 'player-a';
         
         function getApiBase() {
@@ -321,20 +432,30 @@
         function switchPlayer() {
             currentPlayer = document.getElementById('playerSelect').value;
             const isPlayerB = currentPlayer === 'player-b';
-            
-            // Update theme
             document.body.classList.toggle('player-b', isPlayerB);
-            
-            // Refresh all data
             refreshAll();
         }
 
-        // Fetch player info
+        // Fetch player info (and optionally balance from Fiber node)
         async function fetchPlayerInfo() {
             try {
                 const resp = await fetch(`${getApiBase()}/player`);
                 const data = await resp.json();
-                document.getElementById('balance').textContent = data.balance.toLocaleString();
+                // Store Fiber RPC URL for this player
+                fiberRpcUrls[currentPlayer] = data.fiber_rpc_url || null;
+
+                // If Fiber RPC URL is available, fetch balance directly
+                if (data.fiber_rpc_url) {
+                    try {
+                        const balance = await fiberGetBalance(data.fiber_rpc_url);
+                        document.getElementById('balance').textContent = balance.toLocaleString();
+                    } catch (e) {
+                        console.warn('Could not fetch Fiber balance:', e);
+                        document.getElementById('balance').textContent = '(Fiber offline)';
+                    }
+                } else {
+                    document.getElementById('balance').textContent = '(mock)';
+                }
             } catch (e) {
                 console.error('Error fetching player info:', e);
             }
@@ -378,10 +499,9 @@
                     return;
                 }
 
-                // Poll status for games waiting for opponent (triggers invoice creation when opponent joins)
+                // Poll status for games waiting for opponent (triggers phase transition)
                 for (const g of data.games) {
                     if (g.phase === 'WaitingForOpponent') {
-                        // Fire and forget - just trigger the status check
                         fetch(`${getApiBase()}/game/${g.game_id}/status`).catch(() => {});
                     }
                 }
@@ -464,6 +584,151 @@
             }
         }
 
+        // ====================================================================
+        // Fiber invoice/payment flow (frontend-driven)
+        // ====================================================================
+
+        /**
+         * Handle Fiber invoice creation and payment for a game.
+         * Called when game status provides opponent_payment_hash.
+         *
+         * Flow:
+         * 1. Create MY invoice on my Fiber node (using opponent's payment_hash)
+         * 2. Submit the invoice string to Oracle (so opponent can pay it)
+         * 3. Notify backend via /invoice-created
+         * 4. Get opponent's invoice from Oracle and pay it via Fiber RPC
+         * 5. Notify backend via /payment-done
+         */
+        async function handleFiberInvoiceSetup(gameId, status) {
+            const rpcUrl = getFiberRpcUrl();
+            if (!rpcUrl) {
+                console.log('[FiberSetup] No Fiber RPC URL — running in mock mode');
+                return;
+            }
+
+            const opponentHash = status.opponent_payment_hash; // 0x-prefixed hex
+            if (!opponentHash) return; // Not ready yet
+
+            const playerRole = status.role; // 'A' or 'B'
+            const key = `${currentPlayer}:${gameId}`;
+
+            // Step 1-3: Create invoice if not done yet
+            if (!invoiceCreatedFor.has(key)) {
+                try {
+                    console.log(`[FiberSetup] Creating invoice for game ${gameId} with opponent hash ${opponentHash}`);
+                    const invoiceString = await fiberNewInvoice(rpcUrl, opponentHash, status.amount_shannons || 1000, 'Fiber Game Payment');
+                    
+                    // Submit to Oracle
+                    const oracleBase = getApiBase().replace(/player-[ab]$/, 'oracle');
+                    await fetch(`${oracleBase}/game/${gameId}/invoice`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ player: playerRole, invoice_string: invoiceString }),
+                    });
+
+                    // Notify backend
+                    await fetch(`${getApiBase()}/game/${gameId}/invoice-created`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ invoice_string: invoiceString }),
+                    });
+
+                    invoiceCreatedFor.add(key);
+                    console.log(`[FiberSetup] Invoice created and submitted for game ${gameId}`);
+                } catch (e) {
+                    console.error('[FiberSetup] Error creating invoice:', e);
+                }
+            }
+
+            // Step 4-5: Pay opponent's invoice if not done yet
+            if (!paymentSentFor.has(key)) {
+                try {
+                    // Get opponent's invoice from Oracle
+                    const opponent = playerRole === 'A' ? 'B' : 'A';
+                    const oracleBase = getApiBase().replace(/player-[ab]$/, 'oracle');
+                    const invoiceResp = await fetch(`${oracleBase}/game/${gameId}/invoice/${opponent}`);
+                    
+                    if (!invoiceResp.ok) {
+                        console.log('[FiberSetup] Opponent invoice not available yet');
+                        return;
+                    }
+
+                    const invoiceData = await invoiceResp.json();
+                    const oppInvoice = invoiceData.invoice_string;
+                    if (!oppInvoice) {
+                        console.log('[FiberSetup] Opponent invoice string empty');
+                        return;
+                    }
+
+                    console.log(`[FiberSetup] Paying opponent's invoice for game ${gameId}`);
+                    await fiberSendPayment(rpcUrl, oppInvoice);
+
+                    // Notify backend
+                    await fetch(`${getApiBase()}/game/${gameId}/payment-done`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({}),
+                    });
+
+                    paymentSentFor.add(key);
+                    console.log(`[FiberSetup] Payment sent for game ${gameId}`);
+                } catch (e) {
+                    // "already exists" is OK — payment is in progress
+                    if (e.message && e.message.includes('already exists')) {
+                        paymentSentFor.add(key);
+                        // Still notify backend
+                        await fetch(`${getApiBase()}/game/${gameId}/payment-done`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({}),
+                        }).catch(() => {});
+                    } else {
+                        console.error('[FiberSetup] Error paying invoice:', e);
+                    }
+                }
+            }
+        }
+
+        /**
+         * Handle Fiber settlement for a game.
+         * Winner: settle_invoice with opponent's preimage (claim funds)
+         * Loser: cancel_invoice (refund opponent)
+         * Draw: cancel_invoice (refund)
+         */
+        async function handleFiberSettle(gameId, status) {
+            const rpcUrl = getFiberRpcUrl();
+            if (!rpcUrl) return; // Mock mode — skip
+
+            const isWinner = isPlayerWinner(status.result, status.role);
+            const isDraw = status.result === 'Draw';
+
+            if (isWinner && status.opponent_preimage && status.opponent_payment_hash) {
+                // Settle: claim funds using opponent's preimage
+                console.log(`[FiberSettle] Settling invoice for game ${gameId}`);
+                try {
+                    await fiberSettleInvoice(rpcUrl, status.opponent_payment_hash, status.opponent_preimage);
+                    console.log(`[FiberSettle] Invoice settled for game ${gameId}`);
+                } catch (e) {
+                    console.warn('[FiberSettle] settle_invoice error (may already be settled):', e.message);
+                }
+            } else if (isDraw || isPlayerLoser(status.result, status.role)) {
+                // Cancel: refund opponent's payment
+                if (status.opponent_payment_hash) {
+                    console.log(`[FiberSettle] Cancelling invoice for game ${gameId}`);
+                    try {
+                        await fiberCancelInvoice(rpcUrl, status.opponent_payment_hash);
+                        console.log(`[FiberSettle] Invoice cancelled for game ${gameId}`);
+                    } catch (e) {
+                        console.warn('[FiberSettle] cancel_invoice error:', e.message);
+                    }
+                }
+            }
+        }
+
+        // ====================================================================
+        // Game modal and UI
+        // ====================================================================
+
         // Open game modal
         async function openGame(gameId, gameType, phase) {
             const modal = document.getElementById('gameModal');
@@ -471,23 +736,23 @@
             const content = document.getElementById('modalContent');
 
             title.textContent = formatGameType(gameType);
-            
-            // Start with loading state
             content.innerHTML = '<div class="status">Loading...</div>';
             modal.classList.remove('hidden');
 
-            // Fetch current game status
             try {
                 const resp = await fetch(`${getApiBase()}/game/${gameId}/status`);
                 const status = await resp.json();
                 
-                // Store for polling
                 currentGameId = gameId;
                 currentGameType = gameType;
                 
+                // Trigger Fiber invoice setup if needed
+                if (status.opponent_payment_hash && status.phase === 'WaitingForAction') {
+                    handleFiberInvoiceSetup(gameId, status);
+                }
+
                 renderGameModal(gameId, gameType, status);
                 
-                // Start polling if game is in progress
                 if (status.phase !== 'Settled' && status.phase !== 'WaitingForAction') {
                     startGamePolling(gameId, gameType);
                 }
@@ -512,9 +777,14 @@
                 try {
                     const resp = await fetch(`${getApiBase()}/game/${gameId}/status`);
                     const status = await resp.json();
+
+                    // Trigger Fiber invoice setup if opponent has joined
+                    if (status.opponent_payment_hash && status.phase === 'WaitingForAction') {
+                        handleFiberInvoiceSetup(gameId, status);
+                    }
+
                     renderGameModal(gameId, gameType, status);
                     
-                    // Stop polling if game is settled
                     if (status.phase === 'Settled') {
                         stopGamePolling();
                     }
@@ -621,7 +891,6 @@
         }
 
         function getResultText(result, role) {
-            // role is the current player's role in this game (A = creator, B = joiner)
             const isRoleA = role === 'A';
             if (result === 'AWins') return isRoleA ? 'You Win!' : 'You Lose!';
             if (result === 'BWins') return isRoleA ? 'You Lose!' : 'You Win!';
@@ -638,18 +907,29 @@
             const isRoleA = role === 'A';
             if (result === 'AWins') return isRoleA;
             if (result === 'BWins') return !isRoleA;
-            return false; // Draw is not a win
+            return false;
         }
 
         function isPlayerLoser(result, role) {
             const isRoleA = role === 'A';
             if (result === 'AWins') return !isRoleA;
             if (result === 'BWins') return isRoleA;
-            return false; // Draw is not a loss
+            return false;
         }
 
+        /**
+         * Settle game: first handle Fiber settlement, then notify backend.
+         */
         async function settleGame(gameId) {
             try {
+                // Get fresh game status with hashes/preimage
+                const statusResp = await fetch(`${getApiBase()}/game/${gameId}/status`);
+                const status = await statusResp.json();
+
+                // Handle Fiber settlement (settle or cancel invoice on own node)
+                await handleFiberSettle(gameId, status);
+
+                // Tell backend to mark as settled
                 const resp = await fetch(`${getApiBase()}/game/${gameId}/settle`, {
                     method: 'POST'
                 });
@@ -669,7 +949,7 @@
                 refreshAll();
             } catch (e) {
                 console.error('Error settling game:', e);
-                alert('Error settling game');
+                alert('Error settling game: ' + (e.message || e));
             }
         }
 
@@ -685,7 +965,7 @@
             selectedRps = choice;
         }
 
-        // Helper function to submit action with retry logic for payment hash exchange
+        // Submit action with retry logic
         async function submitActionWithRetry(gameId, action, maxRetries = 5, retryDelay = 2000) {
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
                 try {
@@ -701,20 +981,15 @@
                     
                     const errorText = await resp.text();
                     
-                    // If opponent hasn't submitted their hash yet, retry
                     if (errorText.includes("Opponent hasn't submitted") && attempt < maxRetries) {
                         console.log(`Attempt ${attempt}: Waiting for opponent... retrying in ${retryDelay/1000}s`);
                         await new Promise(resolve => setTimeout(resolve, retryDelay));
                         continue;
                     }
                     
-                    // Other errors, show to user
                     throw new Error(errorText || 'Error submitting action');
                 } catch (e) {
-                    if (attempt === maxRetries) {
-                        throw e;
-                    }
-                    // Network error, retry
+                    if (attempt === maxRetries) throw e;
                     await new Promise(resolve => setTimeout(resolve, retryDelay));
                 }
             }
@@ -726,7 +1001,6 @@
                 alert('Please select Rock, Paper, or Scissors');
                 return;
             }
-
             try {
                 const data = await submitActionWithRetry(gameId, { Rps: selectedRps });
                 closeModal();
@@ -743,7 +1017,6 @@
                 alert('Please enter a number between 0 and 99');
                 return;
             }
-
             try {
                 const data = await submitActionWithRetry(gameId, { GuessNumber: guess });
                 closeModal();
@@ -761,7 +1034,6 @@
         }
 
         // Poll status for BOTH players' games waiting for opponent
-        // This ensures invoice creation happens even when viewing the other player
         async function pollAllWaitingGames() {
             for (const player of ['player-a', 'player-b']) {
                 try {
@@ -773,7 +1045,7 @@
                         }
                     }
                 } catch (e) {
-                    // Ignore errors
+                    // Ignore
                 }
             }
         }
@@ -781,10 +1053,10 @@
         // Initial load
         refreshAll();
 
-        // Auto-refresh current player's view every 5 seconds
+        // Auto-refresh every 5 seconds
         setInterval(refreshAll, 5000);
 
-        // Poll both players' waiting games every 5 seconds (for invoice creation)
+        // Poll both players' waiting games every 5 seconds
         setInterval(pollAllWaitingGames, 5000);
 
         // Close modal on outside click

@@ -1,6 +1,8 @@
 //! Fiber Escrow Service
 //!
 //! A hold invoice based escrow system with multi-role Web UI.
+//! All Fiber node interactions are handled by the frontend.
+//! The backend manages order state and reveals preimage when appropriate.
 
 mod handlers;
 mod models;
@@ -11,7 +13,6 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -25,29 +26,23 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Check for Fiber RPC configuration
-    // Seller's node: creates invoices, checks payment status, settles/cancels
-    let seller_client = if let Ok(url) = std::env::var("FIBER_SELLER_RPC_URL") {
-        tracing::info!("Seller Fiber RPC enabled: {}", url);
-        Some(Arc::new(fiber_core::RpcFiberClient::new(url)))
-    } else {
-        tracing::info!("Seller Fiber RPC not configured (set FIBER_SELLER_RPC_URL to enable)");
-        None
-    };
+    // Read Fiber RPC URLs from environment (passed to frontend for direct node calls)
+    let seller_rpc_url = std::env::var("FIBER_SELLER_RPC_URL").ok();
+    let buyer_rpc_url = std::env::var("FIBER_BUYER_RPC_URL").ok();
 
-    // Buyer's node: sends payments
-    let (buyer_client, buyer_rpc_url) = if let Ok(url) = std::env::var("FIBER_BUYER_RPC_URL") {
-        tracing::info!("Buyer Fiber RPC enabled: {}", url);
-        (
-            Some(Arc::new(fiber_core::RpcFiberClient::new(url.clone()))),
-            Some(url),
-        )
+    if let Some(ref url) = seller_rpc_url {
+        tracing::info!("Seller Fiber RPC URL configured: {} (used by seller's frontend)", url);
     } else {
-        tracing::info!("Buyer Fiber RPC not configured (set FIBER_BUYER_RPC_URL to enable)");
-        (None, None)
-    };
+        tracing::info!("Seller Fiber RPC not configured (set FIBER_SELLER_RPC_URL for real payments)");
+    }
 
-    let state = AppState::with_fiber_clients(seller_client, buyer_client, buyer_rpc_url);
+    if let Some(ref url) = buyer_rpc_url {
+        tracing::info!("Buyer Fiber RPC URL configured: {} (used by buyer's frontend)", url);
+    } else {
+        tracing::info!("Buyer Fiber RPC not configured (set FIBER_BUYER_RPC_URL for real payments)");
+    }
+
+    let state = AppState::with_fiber_rpc_urls(seller_rpc_url, buyer_rpc_url);
 
     // Pre-register demo users with role-based names
     state.register_user("buyer".to_string());
@@ -103,8 +98,8 @@ async fn main() {
         .route("/api/arbiter/disputes/:id/resolve", post(resolve_dispute))
         // System
         .route("/api/system/tick", post(tick))
-        // Fiber RPC Proxy (for browser to call buyer's node)
-        .route("/api/fiber/send_payment", post(send_payment_proxy))
+        // Config (returns Fiber RPC URLs for frontend)
+        .route("/api/config", get(get_config))
         // Health
         .route("/api/health", get(health))
         // Static files

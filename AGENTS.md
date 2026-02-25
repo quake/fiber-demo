@@ -4,7 +4,7 @@ This document provides guidelines for AI coding agents working in this repositor
 
 ## Project Overview
 
-This is a multi-workspace Rust project demonstrating Fiber Network applications:
+This is a multi-workspace Rust project demonstrating Fiber Network applications with a **decentralized frontend-driven architecture** — backends manage state only (zero Fiber RPC calls), frontends call Fiber nodes directly from the browser.
 
 - `fiber-core/` - Shared library (crypto primitives, FiberClient trait, MockFiberClient)
 - `fiber-game/` - Two-player game protocol demo (Rock-Paper-Scissors, Guess Number)
@@ -294,10 +294,18 @@ pub async fn create_order(
 - Oracle generates adaptor signatures for game outcomes
 - Four crates: core library, oracle service, player service, combined demo
 - Combined demo (`fiber-game-demo`) runs Oracle + 2 Players on single port
+- **Backend makes zero Fiber RPC calls** — frontend JavaScript calls each player's Fiber node directly
+- Fiber RPC URLs are env vars passed to frontend, not used by backend
 - Units: **shannons** (CKB native unit)
 
 ### fiber-escrow
 - Single service with multi-role Web UI
+- **Backend makes zero Fiber RPC calls** — all Fiber interactions happen in the browser
+- Seller's browser creates hold invoices, buyer's browser sends payments, seller's browser settles invoices
+- Escrow holds the preimage and reveals it via API (in order details) when order completes
+- New `/api/config` endpoint returns Fiber RPC URLs to frontend
+- New `/api/orders/:id/invoice` endpoint for seller to submit invoice string
+- `reqwest` removed from runtime dependencies (only in dev-dependencies for e2e tests)
 - Pre-registered demo users: buyer, seller, arbiter
 - Time simulation via `/api/system/tick` for testing timeouts
 - Units: **shannons** (CKB native unit)

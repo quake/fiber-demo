@@ -8,36 +8,37 @@ This demo implements a marketplace where:
 
 - **Sellers** list products for sale (pre-configured demo products)
 - **Buyers** purchase with funds locked in hold invoices
-- **Escrow** holds the preimage and settles/cancels invoices
+- **Escrow** holds the preimage and reveals it to settle payment
 - **Arbiter** resolves disputes
 - **Automatic timeout** protects sellers from unresponsive buyers
 
 ## Architecture
 
+The backend makes **zero** Fiber RPC calls. All Fiber Network interactions happen in the browser:
+
 ```
 ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
 │   Buyer's    │         │    Escrow    │         │   Seller's   │
-│  Fiber Node  │         │   Service    │         │  Fiber Node  │
-└──────┬───────┘         └──────┬───────┘         └──────┬───────┘
-       │                        │                        │
-       │  FIBER_BUYER_RPC_URL   │  FIBER_SELLER_RPC_URL  │
-       │<───────────────────────│                        │
-       │                        │                        │
-       │  /api/fiber/send_payment                        │
-       │  (backend proxy)       │  create_hold_invoice   │
-       │                        │  get_invoice           │
-       │                        │  settle_invoice        │
-       │                        │  cancel_invoice        │
-       │                        │  ─────────────────────>│
+│   Browser    │         │   Backend    │         │   Browser    │
+│              │◄───────►│  (pure HTTP  │◄───────►│              │
+│  Fiber RPC ──┤         │  state mgmt) │         ├── Fiber RPC  │
+└──────┬───────┘         └──────────────┘         └──────┬───────┘
+       │                   (no Fiber                     │
+       │                    connection)                   │
+       ▼                                                 ▼
+┌──────────────┐                                  ┌──────────────┐
+│   Buyer's    │                                  │   Seller's   │
+│  Fiber Node  │                                  │  Fiber Node  │
+└──────────────┘                                  └──────────────┘
 ```
 
 **Key Design Points:**
 
-1. **Escrow-holds-preimage model**: Buyer submits preimage when creating order. Escrow stores it and can settle invoices autonomously (timeout, dispute resolution).
+1. **Escrow-holds-preimage model**: Buyer submits preimage when creating order. Escrow stores it and reveals it via API when the order is completed (buyer confirms, dispute resolved to seller, or timeout).
 
-2. **Dual-node connection**: Escrow connects to both seller's node (`FIBER_SELLER_RPC_URL`) and buyer's node (`FIBER_BUYER_RPC_URL`).
+2. **Frontend Fiber calls**: The seller's browser creates hold invoices on the seller's Fiber node. The buyer's browser sends payment on the buyer's Fiber node. The seller's browser settles invoices using the preimage revealed by the escrow.
 
-3. **Backend payment proxy**: The Web UI calls `/api/fiber/send_payment` which proxies to the buyer's node, avoiding CORS issues.
+3. **`/api/config` endpoint**: Returns Fiber RPC URLs to the frontend so browsers know which nodes to call.
 
 4. **Pre-configured products**: The marketplace has 3 hardcoded demo products that remain available after purchase.
 
@@ -46,42 +47,49 @@ This demo implements a marketplace where:
 ### Normal Flow
 
 ```
-Buyer                    Escrow Service              Seller's Node
-  │                           │                           │
-  │  1. Buy product           │                           │
-  │  (submit preimage) ──────>│                           │
-  │                           │  2. create_hold_invoice   │
-  │                           │  ─────────────────────────>│
-  │                           │<──── invoice_string ──────│
-  │<── order created ─────────│                           │
-  │                           │                           │
-  │  3. Confirm & Pay ───────>│                           │
-  │                           │  4. send_payment          │
-  │                           │  (via buyer's node)       │
-  │                           │  ─────────────────────────>│
-  │                           │                           │
-  │                           │  5. get_invoice           │
-  │                           │  ─────────────────────────>│
-  │                           │<──── status: Held ────────│
-  │<── status: funded ────────│                           │
-  │                           │                           │
-  │  [Seller ships]           │                           │
-  │                           │                           │
-  │  6. Confirm receipt ─────>│  7. settle_invoice        │
-  │                           │  (using stored preimage)  │
-  │                           │  ─────────────────────────>│
-  │                           │<──── settled ─────────────│
+Buyer Browser            Escrow Backend           Seller Browser
+    │                         │                         │
+    │  1. Create order        │                         │
+    │  (submit preimage) ────►│                         │
+    │◄── order + hash ────────│                         │
+    │                         │                         │
+    │                         │◄── 2. Submit invoice ───│
+    │                         │   (seller's browser     │
+    │                         │    creates hold invoice  │
+    │                         │    on seller's node via  │
+    │                         │    new_invoice RPC,      │
+    │                         │    then POSTs invoice    │
+    │                         │    string to escrow)     │
+    │                         │                         │
+    │  3. Pay invoice         │                         │
+    │  (send_payment RPC      │                         │
+    │   on buyer's own node)  │                         │
+    │                         │                         │
+    │  4. Notify escrow ─────►│                         │
+    │  (POST /pay)            │                         │
+    │◄── status: funded ──────│                         │
+    │                         │                         │
+    │  [Seller ships]         │                         │
+    │                         │                         │
+    │  5. Confirm receipt ───►│                         │
+    │                         │── preimage revealed ───►│
+    │                         │   in order details      │
+    │                         │                         │
+    │                         │  6. Seller settles      │
+    │                         │  (settle_invoice RPC    │
+    │                         │   on seller's own node) │
+    │                         │◄── status: completed ───│
 ```
 
 ### Dispute Flow
 
 If the buyer disputes, the arbiter reviews and decides:
-- **To Seller**: Escrow settles invoice with stored preimage
-- **To Buyer**: Escrow cancels invoice, buyer gets refund
+- **To Seller**: Escrow reveals preimage in order details. Seller's browser calls `settle_invoice` on seller's node.
+- **To Buyer**: Escrow updates order to refunded. Seller's browser calls `cancel_invoice` on seller's node. Buyer's funds are refunded.
 
 ### Timeout Protection
 
-If the buyer doesn't confirm within the timeout period (default 7 days), the escrow automatically settles the invoice using the stored preimage.
+If the buyer doesn't confirm within the timeout period (default 7 days), the escrow automatically marks the order as completed and reveals the preimage. The seller can then settle the invoice on their Fiber node.
 
 ## Running the Demo
 
@@ -90,7 +98,7 @@ If the buyer doesn't confirm within the timeout period (default 7 days), the esc
 ```bash
 cd fiber-escrow/crates/fiber-escrow-service && cargo run
 # Service at http://localhost:3000
-# Payments are simulated (trust mode)
+# Fiber operations are skipped, backend manages state independently
 ```
 
 ### Real Fiber Mode
@@ -99,7 +107,7 @@ cd fiber-escrow/crates/fiber-escrow-service && cargo run
 # Terminal 1: Start Fiber testnet nodes
 ./scripts/setup-fiber-testnet.sh
 
-# Terminal 2: Start escrow with both nodes configured
+# Terminal 2: Start escrow (URLs are passed to frontend, not used by backend)
 cd fiber-escrow/crates/fiber-escrow-service
 FIBER_SELLER_RPC_URL=http://localhost:8227 \
 FIBER_BUYER_RPC_URL=http://localhost:8229 \
@@ -112,7 +120,7 @@ Then open http://localhost:3000 to use the demo.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Fiber Escrow Demo                [User: alice ▼] [9500 shannons]   │
+│  Fiber Escrow Demo                [User: alice ▼] [Balance]     │
 ├─────────────────────────────────────────────────────────────────┤
 │  [Market]  [My Orders]  [Arbiter]                               │
 └─────────────────────────────────────────────────────────────────┘
@@ -141,7 +149,7 @@ Products remain available after purchase (can be bought multiple times).
 ### Tabs
 
 - **Market**: Browse and buy available products
-- **My Orders**: View orders as buyer/seller, pay invoices, confirm receipt, dispute, mark shipped
+- **My Orders**: View orders as buyer/seller, create invoices (seller), pay invoices (buyer), confirm receipt, dispute, mark shipped
 - **Arbiter**: Resolve disputes, simulate time passage
 
 ## Environment Variables
@@ -149,24 +157,48 @@ Products remain available after purchase (can be bought multiple times).
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PORT` | HTTP server port | `3000` |
-| `FIBER_SELLER_RPC_URL` | Seller's Fiber node RPC URL | (none - mock mode) |
-| `FIBER_BUYER_RPC_URL` | Buyer's Fiber node RPC URL | (none - mock mode) |
+| `FIBER_SELLER_RPC_URL` | Seller's Fiber node RPC URL (passed to frontend) | (none - mock mode) |
+| `FIBER_BUYER_RPC_URL` | Buyer's Fiber node RPC URL (passed to frontend) | (none - mock mode) |
 
-When both `FIBER_SELLER_RPC_URL` and `FIBER_BUYER_RPC_URL` are set, the escrow service connects to real Fiber nodes. Otherwise, it runs in mock mode with simulated payments.
+When Fiber RPC URLs are set, the backend passes them to the frontend via `/api/config`. The frontend then makes Fiber RPC calls directly from the browser. The backend itself **never** connects to Fiber nodes.
 
 ## API Endpoints
+
+### Configuration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/config` | Get Fiber RPC URLs for frontend |
+| GET | `/api/health` | Health check |
+
+### Users
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/user/register` | Register a new user |
+| GET | `/api/user/me` | Get current user info |
+| GET | `/api/users` | List all users |
+
+### Products
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/products` | Create a product |
+| GET | `/api/products` | List all products |
+| GET | `/api/products/mine` | List my products |
 
 ### Orders
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/orders` | Create order with preimage |
-| GET | `/api/orders/{id}` | Get order details |
 | GET | `/api/orders/mine` | List my orders |
-| POST | `/api/orders/{id}/pay` | Verify payment (after buyer pays) |
-| POST | `/api/orders/{id}/ship` | Mark as shipped |
-| POST | `/api/orders/{id}/confirm` | Confirm receipt (settles invoice) |
-| POST | `/api/orders/{id}/dispute` | Open dispute |
+| GET | `/api/orders/{id}` | Get order details (includes preimage when completed) |
+| POST | `/api/orders/{id}/invoice` | Submit invoice string (seller) |
+| POST | `/api/orders/{id}/pay` | Notify payment completed (buyer) |
+| POST | `/api/orders/{id}/ship` | Mark as shipped (seller) |
+| POST | `/api/orders/{id}/confirm` | Confirm receipt (buyer, reveals preimage) |
+| POST | `/api/orders/{id}/dispute` | Open dispute (buyer) |
 
 ### Create Order Request
 
@@ -177,7 +209,17 @@ When both `FIBER_SELLER_RPC_URL` and `FIBER_BUYER_RPC_URL` are set, the escrow s
 }
 ```
 
-The escrow computes `payment_hash = SHA256(preimage)` and creates a hold invoice.
+The escrow computes `payment_hash = SHA256(preimage)` and stores the preimage. The `payment_hash` is returned in the response for the seller to create a hold invoice.
+
+### Submit Invoice Request
+
+```json
+{
+  "invoice": "fibt1..."
+}
+```
+
+The seller's browser creates a hold invoice on the seller's Fiber node using the `payment_hash`, then submits the invoice string to the escrow via this endpoint.
 
 ### Arbiter
 
@@ -185,21 +227,6 @@ The escrow computes `payment_hash = SHA256(preimage)` and creates a hold invoice
 |--------|----------|-------------|
 | GET | `/api/arbiter/disputes` | List open disputes |
 | POST | `/api/arbiter/disputes/{id}/resolve` | Resolve: `{"resolution": "seller"}` or `{"resolution": "buyer"}` |
-
-### Fiber Proxy
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/fiber/send_payment` | Send payment via buyer's node (backend proxy) |
-
-**Send Payment Request:**
-```json
-{
-  "invoice": "fibt1..."
-}
-```
-
-This endpoint proxies the payment request to the buyer's Fiber node configured via `FIBER_BUYER_RPC_URL`, avoiding CORS issues.
 
 ### System
 
@@ -219,34 +246,43 @@ cd fiber-escrow && cargo test --test e2e_escrow_flow -- --nocapture
 
 See [E2E Test Flow Documentation](../docs/escrow-e2e-test-flow.md) for detailed test scenarios.
 
-## CORS Note
-
-The escrow service includes a backend proxy (`/api/fiber/send_payment`) that routes payment requests to the buyer's Fiber node. This avoids CORS issues since the browser only communicates with the escrow service, not directly with Fiber nodes.
-
 ## Dependencies
 
-- `fiber-core`: `Preimage`, `PaymentHash`, `FiberClient` trait, `RpcFiberClient`
+- `fiber-core`: `Preimage`, `PaymentHash` types (crypto primitives only)
 - `axum`: HTTP server
 - `tower-http`: CORS and static file serving
-- `reqwest`: HTTP client for Fiber RPC calls
+
+Note: `reqwest` is **not** a runtime dependency — it is only used in dev-dependencies for e2e tests. The backend makes no outbound HTTP calls at runtime.
 
 ## Order Status Flow
 
 ```
-WaitingPayment ──[pay verified]──> Funded ──[ship]──> Shipped
-                                                         │
-                          ┌──────────────────────────────┼──────────────────────────────┐
-                          │                              │                              │
-                          ▼                              ▼                              ▼
-                     Completed                      Disputed                       (timeout)
-                   (buyer confirms)              (buyer disputes)                (auto-settle)
-                   [settle_invoice]                     │                       [settle_invoice]
-                                          ┌─────────────┴─────────────┐
-                                          ▼                           ▼
-                                     Completed                    Refunded
-                                   (arbiter: seller)           (arbiter: buyer)
-                                   [settle_invoice]            [cancel_invoice]
+WaitingPayment ──[invoice submitted]──> WaitingPayment ──[pay notified]──> Funded
+                                                                              │
+                                                                         [ship]
+                                                                              │
+                                                                              ▼
+                                                                          Shipped
+                                                                              │
+                          ┌───────────────────────────────┬───────────────────┤
+                          │                               │                  │
+                          ▼                               ▼                  ▼
+                     Completed                       Disputed            (timeout)
+                   (buyer confirms)              (buyer disputes)     (auto-complete)
+                   [preimage revealed]                  │             [preimage revealed]
+                   [seller settles                      │             [seller settles
+                    on own node]            ┌───────────┴──────────┐   on own node]
+                                            ▼                      ▼
+                                       Completed               Refunded
+                                     (arbiter: seller)      (arbiter: buyer)
+                                     [preimage revealed]    [seller cancels
+                                     [seller settles         on own node]
+                                      on own node]
 ```
+
+## CORS Note
+
+Since the frontend calls Fiber nodes directly from the browser, CORS restrictions may apply. See [CORS considerations](../docs/escrow-e2e-test-flow.md#cors-considerations) for solutions.
 
 ## License
 

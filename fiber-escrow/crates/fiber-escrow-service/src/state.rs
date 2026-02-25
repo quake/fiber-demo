@@ -2,19 +2,19 @@
 
 use crate::models::*;
 use chrono::{DateTime, Utc};
-use fiber_core::{FiberClient, RpcFiberClient};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// Shared application state
+///
+/// Note: All Fiber node interactions are handled by the frontend.
+/// The backend stores RPC URLs only to pass them to the frontend.
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<Mutex<AppStateInner>>,
-    /// Fiber client for seller's node (creates invoices, settles payments)
-    seller_fiber_client: Option<Arc<RpcFiberClient>>,
-    /// Fiber client for buyer's node (for checking real balances)
-    buyer_fiber_client: Option<Arc<RpcFiberClient>>,
-    /// Buyer's Fiber RPC URL (for sending payments)
+    /// Seller's Fiber RPC URL (passed to frontend for direct node calls)
+    seller_fiber_rpc_url: Option<String>,
+    /// Buyer's Fiber RPC URL (passed to frontend for direct node calls)
     buyer_fiber_rpc_url: Option<String>,
 }
 
@@ -36,16 +36,14 @@ impl AppState {
                 orders: HashMap::new(),
                 current_time: None,
             })),
-            seller_fiber_client: None,
-            buyer_fiber_client: None,
+            seller_fiber_rpc_url: None,
             buyer_fiber_rpc_url: None,
         }
     }
 
-    /// Create new state with Fiber clients for real payments
-    pub fn with_fiber_clients(
-        seller_client: Option<Arc<RpcFiberClient>>,
-        buyer_client: Option<Arc<RpcFiberClient>>,
+    /// Create new state with Fiber RPC URLs (passed to frontend)
+    pub fn with_fiber_rpc_urls(
+        seller_rpc_url: Option<String>,
         buyer_rpc_url: Option<String>,
     ) -> Self {
         Self {
@@ -55,20 +53,14 @@ impl AppState {
                 orders: HashMap::new(),
                 current_time: None,
             })),
-            seller_fiber_client: seller_client,
-            buyer_fiber_client: buyer_client,
+            seller_fiber_rpc_url: seller_rpc_url,
             buyer_fiber_rpc_url: buyer_rpc_url,
         }
     }
 
-    /// Get the seller's Fiber client if configured
-    pub fn seller_fiber_client(&self) -> Option<&Arc<RpcFiberClient>> {
-        self.seller_fiber_client.as_ref()
-    }
-
-    /// Get the buyer's Fiber client if configured
-    pub fn buyer_fiber_client(&self) -> Option<&Arc<RpcFiberClient>> {
-        self.buyer_fiber_client.as_ref()
+    /// Get seller's Fiber RPC URL if configured
+    pub fn seller_fiber_rpc_url(&self) -> Option<&str> {
+        self.seller_fiber_rpc_url.as_deref()
     }
 
     /// Get buyer's Fiber RPC URL if configured
@@ -101,80 +93,53 @@ impl AppState {
         user
     }
 
-    pub async fn get_user(&self, id: UserId) -> Option<User> {
+    pub fn get_user(&self, id: UserId) -> Option<User> {
         let mut user = {
             let inner = self.inner.lock().unwrap();
             inner.users.get(&id).cloned()?
         };
-        
-        let username = user.username.to_lowercase();
-        
-        // Try to get real balance from Fiber node
-        let mut real_balance = None;
-        if username == "seller" {
-            if let Some(client) = self.seller_fiber_client() {
-                if let Ok(bal) = client.get_balance().await {
-                    real_balance = Some(bal as i64);
-                }
-            }
-        } else if username == "buyer" {
-            if let Some(client) = self.buyer_fiber_client() {
-                if let Ok(bal) = client.get_balance().await {
-                    real_balance = Some(bal as i64);
-                }
-            }
-        }
 
-        if let Some(bal) = real_balance {
-            user.balance_shannons = bal;
-        } else {
-            // Fallback: Calculate simulated balance based on orders
-            let inner = self.inner.lock().unwrap();
-            let mut balance: i64 = 0;
-            for order in inner.orders.values() {
-                if order.seller_id == id && order.status == OrderStatus::Completed {
-                    balance += order.amount_shannons as i64;
-                }
-                if order.buyer_id == id {
-                    match order.status {
-                        OrderStatus::Funded | OrderStatus::Shipped | OrderStatus::Completed | OrderStatus::Disputed => {
-                            balance -= order.amount_shannons as i64;
-                        }
-                        _ => {}
+        // Calculate simulated balance based on orders
+        // Real balance comes from frontend calling Fiber node directly
+        let inner = self.inner.lock().unwrap();
+        let mut balance: i64 = 0;
+        for order in inner.orders.values() {
+            if order.seller_id == id && order.status == OrderStatus::Completed {
+                balance += order.amount_shannons as i64;
+            }
+            if order.buyer_id == id {
+                match order.status {
+                    OrderStatus::Funded
+                    | OrderStatus::Shipped
+                    | OrderStatus::Completed
+                    | OrderStatus::Disputed => {
+                        balance -= order.amount_shannons as i64;
                     }
+                    _ => {}
                 }
             }
-            user.balance_shannons = balance;
         }
-        
+        user.balance_shannons = balance;
+
         Some(user)
     }
 
-    pub async fn get_user_by_username(&self, username: &str) -> Option<User> {
-        let id = {
-            let inner = self.inner.lock().unwrap();
-            inner.users.values().find(|u| u.username == username).map(|u| u.id)
-        };
-        if let Some(id) = id {
-            self.get_user(id).await
-        } else {
-            None
-        }
+    pub fn get_user_by_username(&self, username: &str) -> Option<User> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .users
+            .values()
+            .find(|u| u.username == username)
+            .cloned()
     }
 
-    pub async fn list_users(&self) -> Vec<User> {
+    pub fn list_users(&self) -> Vec<User> {
         let ids: Vec<UserId> = {
             let inner = self.inner.lock().unwrap();
             inner.users.keys().cloned().collect()
         };
-        
-        let mut users = Vec::new();
-        for id in ids {
-            if let Some(user) = self.get_user(id).await {
-                users.push(user);
-            }
-        }
-        users
+
+        ids.iter().filter_map(|id| self.get_user(*id)).collect()
     }
 
     // Product operations
@@ -291,14 +256,8 @@ impl AppState {
     }
 
     /// Check for expired orders and auto-confirm them
-    /// Returns tuples of (OrderId, PaymentHash, Preimage) for settlement
-    pub fn process_expired_orders(
-        &self,
-    ) -> Vec<(
-        OrderId,
-        fiber_core::PaymentHash,
-        Option<fiber_core::Preimage>,
-    )> {
+    /// Returns list of expired OrderIds (settlement is handled by frontend)
+    pub fn process_expired_orders(&self) -> Vec<OrderId> {
         let now = self.now();
         let mut expired = Vec::new();
 
@@ -307,11 +266,7 @@ impl AppState {
             // Only auto-confirm shipped orders that have expired
             if order.status == OrderStatus::Shipped && order.expires_at <= now {
                 order.status = OrderStatus::Completed;
-                expired.push((
-                    order.id,
-                    order.payment_hash.clone(),
-                    order.revealed_preimage.clone(),
-                ));
+                expired.push(order.id);
             }
         }
 

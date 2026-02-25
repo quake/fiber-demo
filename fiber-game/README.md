@@ -33,6 +33,38 @@ fiber-game/
     └── fiber-game-demo/       # Combined demo service
 ```
 
+### Frontend-Driven Fiber Integration
+
+The backend makes **zero** Fiber RPC calls. All Fiber Network interactions happen in the browser:
+
+```
+┌────────────┐                                    ┌────────────┐
+│ Player A   │         ┌──────────────┐           │ Player B   │
+│ Browser    │◄───────►│   Backend    │◄─────────►│ Browser    │
+│            │  HTTP   │  (Oracle +   │   HTTP    │            │
+│ Fiber RPC ─┼─ ─ ─ ─ │  Game State) │ ─ ─ ─ ─ ─┼─ Fiber RPC │
+└─────┬──────┘         └──────────────┘           └─────┬──────┘
+      │                  (no Fiber)                     │
+      ▼                  connection                     ▼
+┌────────────┐                                    ┌────────────┐
+│ Fiber      │                                    │ Fiber      │
+│ Node A     │                                    │ Node B     │
+└────────────┘                                    └────────────┘
+```
+
+**Frontend responsibilities:**
+- `new_invoice` — create hold invoice on own Fiber node
+- `send_payment` — pay opponent's invoice on own Fiber node
+- `settle_invoice` — settle hold invoice with opponent's preimage (winner)
+- `cancel_invoice` — cancel hold invoice (loser, refund)
+- `list_channels` — query balance from own Fiber node
+
+**Backend responsibilities:**
+- Game state management (create, join, reveal, result)
+- Oracle logic (adaptor signatures, winner determination)
+- Preimage/payment hash exchange between players
+- No Fiber node connection whatsoever
+
 ## How It Works
 
 ### Game Flow
@@ -59,11 +91,47 @@ Player A                  Oracle                  Player B
     │  7. Winner claims prize via hold invoice        │
 ```
 
-### Key Cryptographic Components
+### Hold Invoice Flow (Frontend-Driven)
 
-- **Commitment**: `SHA256(move || salt)` - hides the move until reveal
-- **Adaptor Signature**: Partial signature that becomes valid when a secret is revealed
-- **Hold Invoice**: Payment locked until preimage (derived from adaptor) is revealed
+```
+Player A Browser          Backend (Oracle)          Player B Browser
+    │                          │                          │
+    │  Submit preimage_a       │     Submit preimage_b    │
+    │  + payment_hash_a ──────►│◄──── + payment_hash_b   │
+    │                          │                          │
+    │  Get opponent's hash_b   │   Get opponent's hash_a  │
+    │◄─────────────────────────│─────────────────────────►│
+    │                          │                          │
+    │  Create invoice on       │    Create invoice on     │
+    │  own Fiber node          │    own Fiber node        │
+    │  (using hash_b)          │    (using hash_a)        │
+    │  [new_invoice RPC]       │    [new_invoice RPC]     │
+    │                          │                          │
+    │  Submit invoice string──►│◄── Submit invoice string │
+    │                          │                          │
+    │  Get opponent's invoice  │  Get opponent's invoice  │
+    │◄─────────────────────────│─────────────────────────►│
+    │                          │                          │
+    │  Pay B's invoice on      │    Pay A's invoice on    │
+    │  own Fiber node          │    own Fiber node        │
+    │  [send_payment RPC]      │    [send_payment RPC]    │
+    │                          │                          │
+    │       [Both reveal moves - Oracle determines winner]│
+    │                          │                          │
+    │  Oracle reveals          │                          │
+    │  preimage_b to A ◄───────│                          │
+    │                          │                          │
+    │  A settles invoice       │                          │
+    │  on own Fiber node       │                          │
+    │  [settle_invoice RPC]    │                          │
+    │                          │                          │
+    │                          │    B cancels invoice     │
+    │                          │    on own Fiber node     │
+    │                          │    [cancel_invoice RPC]  │
+    │                          │─────────────────────────►│
+```
+
+**Key insight**: Each player's invoice is created on their **own** Fiber node with the **opponent's** `payment_hash`. To settle it, you need the **opponent's preimage**, which the Oracle only reveals to the winner. All Fiber RPC calls are made by the player's browser directly to their own Fiber node.
 
 ## Running the Demo
 
@@ -79,7 +147,7 @@ cd fiber-game/crates/fiber-game-demo && cargo run
 Open http://localhost:3000 and use the **Player selector** dropdown to switch between Player A and Player B (open two browser windows for two-player testing).
 
 #### Real Fiber Integration
-To test with real Fiber nodes, set the RPC URLs for each player:
+To test with real Fiber nodes, set the RPC URLs. These are passed to the frontend via the backend — the backend itself never connects to Fiber nodes:
 ```bash
 FIBER_PLAYER_A_RPC_URL=http://localhost:8227 \
 FIBER_PLAYER_B_RPC_URL=http://localhost:8229 \
@@ -107,14 +175,13 @@ cd fiber-game/crates/fiber-game-player && PORT=3002 cargo run
 |--------------|-------------|---------|
 | `PORT` | HTTP service port | 3000 |
 | `ORACLE_URL` | URL of the Oracle service (for players) | http://localhost:3000 |
-| `FIBER_RPC_URL` | Fiber node RPC URL (standalone player) | None (Mock mode) |
-| `FIBER_PLAYER_A_RPC_URL` | Fiber node RPC for Player A (demo) | None (Mock mode) |
-| `FIBER_PLAYER_B_RPC_URL` | Fiber node RPC for Player B (demo) | None (Mock mode) |
+| `FIBER_PLAYER_A_RPC_URL` | Fiber node RPC URL for Player A (passed to frontend) | None (Mock mode) |
+| `FIBER_PLAYER_B_RPC_URL` | Fiber node RPC URL for Player B (passed to frontend) | None (Mock mode) |
 
 ## Key Concepts
 
 - **Shannons**: All amounts in this demo use **shannons**, the native unit of CKB (1 CKB = 10^8 shannons).
-- **Mock Mode**: By default, the services run in "Mock Mode" with simulated Fiber balances (100,000 shannons initial).
+- **Mock Mode**: By default, the services run in "Mock Mode". Without Fiber RPC URLs, the frontend gracefully skips Fiber operations and the backend manages game state independently.
 - **Hold Invoices**: Funds are locked in a Fiber hold invoice when a game starts and only released to the winner upon reveal.
 
 ### Hold Invoice Security Model
@@ -122,46 +189,10 @@ cd fiber-game/crates/fiber-game-player && PORT=3002 cargo run
 The game uses hold invoices to lock funds securely:
 
 1. **Payment Hash & Preimage Submission**: Each player generates a random preimage, computes its hash (`payment_hash`), and submits **both** to the Oracle (preimage is kept secret until game ends)
-2. **Cross-Invoice Creation**: Players create invoices using the **opponent's** `payment_hash`, ensuring only the opponent's preimage can settle it
-3. **Mutual Payment**: Both players pay each other's invoices (funds are locked, not transferred)
+2. **Cross-Invoice Creation**: Players create invoices on their **own** Fiber node using the **opponent's** `payment_hash`, ensuring only the opponent's preimage can settle it
+3. **Mutual Payment**: Both players pay each other's invoices from their **own** Fiber node (funds are locked, not transferred)
 4. **Oracle Reveals Preimage**: When the game ends, the Oracle reveals the **loser's preimage** to the winner
-5. **Winner Settlement**: The winner uses the opponent's preimage to settle their own invoice (claiming the funds the opponent paid)
-
-```
-Player A                    Oracle                    Player B
-   │                          │                          │
-   │  preimage_a ──► hash_a   │   preimage_b ──► hash_b  │
-   │                          │                          │
-   │  Submit (hash_a, preimage_a)                        │
-   │─────────────────────────►│                          │
-   │                          │◄─────────────────────────│
-   │                          │  Submit (hash_b, preimage_b)
-   │                          │                          │
-   │  Get hash_b from Oracle  │  Get hash_a from Oracle  │
-   │◄─────────────────────────│─────────────────────────►│
-   │                          │                          │
-   │  Create my_invoice       │       Create my_invoice  │
-   │  (using hash_b)          │       (using hash_a)     │
-   │                          │                          │
-   │  Pay B's invoice ────────┼─────────────────────────►│
-   │◄─────────────────────────┼────────── Pay A's invoice│
-   │                          │                          │
-   │         [Game plays out - both reveal moves]        │
-   │                          │                          │
-   │  Oracle determines A wins│                          │
-   │  Oracle reveals preimage_b to A                     │
-   │◄─────────────────────────│                          │
-   │                          │                          │
-   │  A settles my_invoice    │                          │
-   │  using preimage_b        │                          │
-   │  (claims B's payment)    │                          │
-   │                          │                          │
-   │                          │  B cancels my_invoice    │
-   │                          │  (refunds A's payment)   │
-   │                          │─────────────────────────►│
-```
-
-**Key insight**: Each player's `my_invoice` is created with the **opponent's** `payment_hash`. To settle it, you need the **opponent's preimage**, which the Oracle only reveals to the winner.
+5. **Winner Settlement**: The winner uses the opponent's preimage to settle their own invoice on their **own** Fiber node (claiming the funds the opponent paid)
 
 #### Oracle Trust Model
 
@@ -208,31 +239,46 @@ cargo test --test e2e_game_flow -- --nocapture
 
 ## API Endpoints
 
-### Oracle (Combined Demo: `/oracle/*`)
+### Oracle (Combined Demo: `/api/oracle/*`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/oracle/game/create` | Create a new game |
-| POST | `/oracle/game/{id}/join` | Join an existing game |
-| POST | `/oracle/game/{id}/reveal` | Reveal your move |
-| GET | `/oracle/game/{id}/result` | Get game result |
+| GET | `/api/oracle/pubkey` | Get Oracle public key |
+| GET | `/api/oracle/games/available` | List available games |
+| POST | `/api/oracle/game/create` | Create a new game |
+| POST | `/api/oracle/game/{id}/join` | Join an existing game |
+| POST | `/api/oracle/game/{id}/payment-hash` | Submit payment hash + preimage |
+| GET | `/api/oracle/game/{id}/payment-hash/{player}` | Get opponent's payment hash |
+| POST | `/api/oracle/game/{id}/invoice` | Submit invoice string |
+| GET | `/api/oracle/game/{id}/invoice/{player}` | Get opponent's invoice string |
+| POST | `/api/oracle/game/{id}/encrypted-preimage` | Submit encrypted preimage |
+| GET | `/api/oracle/game/{id}/encrypted-preimage/{player}` | Get opponent's encrypted preimage |
+| POST | `/api/oracle/game/{id}/commit` | Submit move commitment |
+| POST | `/api/oracle/game/{id}/reveal` | Reveal move |
+| GET | `/api/oracle/game/{id}/status` | Get game status |
+| GET | `/api/oracle/game/{id}/result` | Get game result (includes preimage for winner) |
 
-### Player (Combined Demo: `/player-a/*` or `/player-b/*`)
+### Player (Combined Demo: `/api/player-a/*` or `/api/player-b/*`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/player-{a,b}/games/create` | Create a game |
-| POST | `/player-{a,b}/games/join` | Join a game |
-| POST | `/player-{a,b}/games/{id}/play` | Submit move |
-| GET | `/player-{a,b}/games/{id}/status` | Get game status |
-| POST | `/player-{a,b}/games/{id}/settle` | Settle after game ends |
-| GET | `/player-{a,b}/balance` | Get current balance |
+| GET | `/api/player-{a,b}/player` | Get player info |
+| GET | `/api/player-{a,b}/games/available` | List available games |
+| GET | `/api/player-{a,b}/games/mine` | List my games |
+| POST | `/api/player-{a,b}/game/create` | Create a game |
+| POST | `/api/player-{a,b}/game/join` | Join a game |
+| POST | `/api/player-{a,b}/game/{id}/play` | Submit move |
+| GET | `/api/player-{a,b}/game/{id}/status` | Get game status |
+| POST | `/api/player-{a,b}/game/{id}/settle` | Settle after game ends |
+| POST | `/api/player-{a,b}/game/{id}/invoice-created` | Notify backend of invoice creation |
+| POST | `/api/player-{a,b}/game/{id}/payment-done` | Notify backend of payment completion |
 
 ## Dependencies
 
 This crate depends on `fiber-core` for:
 - `Preimage` / `PaymentHash` types
-- `FiberClient` trait and `MockFiberClient`
+
+Note: The backend does **not** use `FiberClient`, `MockFiberClient`, or `RpcFiberClient` — all Fiber interactions are handled by the frontend.
 
 ## Testing
 
@@ -243,7 +289,7 @@ The test suite covers:
 - Edge cases (invalid moves, timeouts)
 
 ```bash
-# Run all 38 tests
+# Run all tests
 cargo test
 
 # Run only core library tests

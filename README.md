@@ -2,6 +2,30 @@
 
 Demo applications showcasing [Fiber Network](https://fiber.nervos.org/) payment channel capabilities on CKB.
 
+## Architecture
+
+Both demos follow a **decentralized frontend-driven** architecture:
+
+- **Backends** manage application state only (game logic, order management) — they make **zero** Fiber RPC calls
+- **Frontends** (browser JavaScript) call each user's own Fiber node directly via JSON-RPC
+- Fiber node RPC URLs are passed as environment variables and served to the frontend via `/api/config`
+
+```
+┌──────────┐     ┌──────────────┐     ┌──────────┐
+│ Player A │     │   Backend    │     │ Player B │
+│ Browser  │     │  (pure HTTP  │     │ Browser  │
+│          │     │   state mgmt)│     │          │
+└────┬─────┘     └──────┬───────┘     └────┬─────┘
+     │                  │                  │
+     │  HTTP API ◄─────►│◄──── HTTP API ──►│
+     │                  │                  │
+     ▼                  │                  ▼
+┌──────────┐            │           ┌──────────┐
+│ Fiber    │  (no connection)       │ Fiber    │
+│ Node A   │                        │ Node B   │
+└──────────┘                        └──────────┘
+```
+
 ## Projects
 
 | Project | Description |
@@ -41,7 +65,7 @@ The setup script automatically downloads Fiber binaries, creates accounts, and s
 
 ### 2. Run Demo Applications
 
-Once nodes are running, start either demo:
+Once nodes are running, start either demo. The Fiber RPC URLs are passed to the backend as environment variables and forwarded to the frontend via `/api/config` — the backend itself never calls the Fiber nodes.
 
 **Escrow Demo** (http://localhost:3000):
 ```bash
@@ -61,7 +85,7 @@ cargo run
 
 ### Mock Mode (No Fiber Nodes)
 
-Both demos can run without real Fiber nodes for testing:
+Both demos can run without real Fiber nodes for testing. Without Fiber RPC URLs configured, the frontends gracefully skip Fiber operations and the backends manage state independently:
 
 ```bash
 # Escrow
@@ -74,7 +98,7 @@ cd fiber-game/crates/fiber-game-demo && cargo run
 ## Documentation
 
 See each project's README for detailed usage:
-- [fiber-game/README.md](./fiber-game/README.md) - Game protocol, hold invoice model, API
+- [fiber-game/README.md](./fiber-game/README.md) - Game protocol, frontend Fiber integration, API
 - [fiber-escrow/README.md](./fiber-escrow/README.md) - Escrow flow, dispute resolution, API
 
 ## License

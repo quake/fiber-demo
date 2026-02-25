@@ -361,22 +361,129 @@
         let users = [];
         let disputeOrderId = null;
         // Purchase modal state
-        let pendingPurchase = null; // {productId, productTitle, price, orderId, invoice, preimageHex}
+        let pendingPurchase = null; // {productId, productTitle, price, orderId, paymentHash, preimageHex}
         // Store preimages locally (in real app, would be in secure storage)
         let orderPreimages = {};
 
-        // Crypto helpers for preimage/payment_hash generation
+        // Fiber RPC URLs (fetched from backend /api/config)
+        let sellerFiberRpcUrl = null;
+        let buyerFiberRpcUrl = null;
+
+        // Track which orders we already created invoices for / settled (prevent duplicates)
+        const invoiceCreatedFor = new Set();
+        const settledFor = new Set();
+
+        // ============ Fiber RPC helpers ============
+
+        /**
+         * Generic JSON-RPC 2.0 call to a Fiber node.
+         */
+        async function fiberRpc(rpcUrl, method, params) {
+            const body = {
+                jsonrpc: '2.0',
+                id: 1,
+                method,
+                params: [params],
+            };
+            console.log(`[FiberRPC] ${method} ->`, JSON.stringify(body));
+            const resp = await fetch(rpcUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            console.log(`[FiberRPC] ${method} <-`, JSON.stringify(data));
+            if (data.error) {
+                throw new Error(data.error.message || JSON.stringify(data.error));
+            }
+            return data.result;
+        }
+
+        /**
+         * Create a hold invoice (new_invoice) on a Fiber node.
+         * paymentHash must be 0x-prefixed hex (32 bytes).
+         */
+        async function fiberNewInvoice(rpcUrl, paymentHash, amountShannons, description) {
+            const FINAL_EXPIRY_DELTA_MS = 9_600_000; // 160 minutes (Fiber minimum)
+            const EXPIRY_SECS = 86400; // 24 hours
+            const result = await fiberRpc(rpcUrl, 'new_invoice', {
+                amount: '0x' + amountShannons.toString(16),
+                currency: 'Fibt',
+                payment_hash: paymentHash,
+                expiry: '0x' + EXPIRY_SECS.toString(16),
+                final_expiry_delta: '0x' + FINAL_EXPIRY_DELTA_MS.toString(16),
+                description: description || 'Fiber Escrow Payment',
+            });
+            return result.invoice_address; // the invoice string
+        }
+
+        /**
+         * Pay an invoice via send_payment.
+         */
+        async function fiberSendPayment(rpcUrl, invoiceString) {
+            const result = await fiberRpc(rpcUrl, 'send_payment', {
+                invoice: invoiceString,
+            });
+            const status = (result.status || 'unknown').toLowerCase();
+            if (['success', 'inflight', 'created'].includes(status)) {
+                return result;
+            }
+            throw new Error(`Payment failed: ${result.failed_error || status}`);
+        }
+
+        /**
+         * Settle a hold invoice with preimage (claim held funds).
+         * Both paymentHash and preimage must be 0x-prefixed hex.
+         */
+        async function fiberSettleInvoice(rpcUrl, paymentHash, preimage) {
+            return await fiberRpc(rpcUrl, 'settle_invoice', {
+                payment_hash: paymentHash,
+                payment_preimage: preimage,
+            });
+        }
+
+        /**
+         * Cancel a hold invoice (refund held funds).
+         * paymentHash must be 0x-prefixed hex.
+         */
+        async function fiberCancelInvoice(rpcUrl, paymentHash) {
+            return await fiberRpc(rpcUrl, 'cancel_invoice', {
+                payment_hash: paymentHash,
+            });
+        }
+
+        /**
+         * Get total local balance across all channels (in shannons).
+         */
+        async function fiberGetBalance(rpcUrl) {
+            const result = await fiberRpc(rpcUrl, 'list_channels', {});
+            const channels = result.channels || [];
+            let total = 0;
+            for (const ch of channels) {
+                const hex = ch.local_balance || '0x0';
+                total += parseInt(hex, 16) || 0;
+            }
+            return total;
+        }
+
+        /**
+         * Get the current user's Fiber RPC URL based on their role.
+         */
+        function getCurrentFiberRpcUrl() {
+            const user = users.find(u => u.id === currentUserId);
+            if (!user) return null;
+            const username = user.username.toLowerCase();
+            if (username === 'seller') return sellerFiberRpcUrl;
+            if (username === 'buyer') return buyerFiberRpcUrl;
+            return null;
+        }
+
+        // ============ Crypto helpers ============
+
         async function generatePreimage() {
-            // Generate 32 random bytes
             const preimage = new Uint8Array(32);
             crypto.getRandomValues(preimage);
             return preimage;
-        }
-
-        async function computePaymentHash(preimage) {
-            // SHA-256 hash of preimage
-            const hashBuffer = await crypto.subtle.digest('SHA-256', preimage);
-            return new Uint8Array(hashBuffer);
         }
 
         function bytesToHex(bytes) {
@@ -392,7 +499,8 @@
             return bytes;
         }
 
-        // API helpers
+        // ============ API helpers ============
+
         async function api(method, path, body = null) {
             const headers = { 'Content-Type': 'application/json' };
             if (currentUserId) {
@@ -413,7 +521,8 @@
             setTimeout(() => toast.className = 'toast', 3000);
         }
 
-        // Tab navigation
+        // ============ Tab navigation ============
+
         function showTab(tabId) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -422,7 +531,8 @@
             refresh();
         }
 
-        // User management
+        // ============ User management ============
+
         async function loadUsers() {
             const data = await api('GET', '/users');
             let rawUsers = data.users || [];
@@ -448,6 +558,17 @@
             }
         }
 
+        async function loadConfig() {
+            try {
+                const data = await api('GET', '/config');
+                sellerFiberRpcUrl = data.seller_fiber_rpc_url || null;
+                buyerFiberRpcUrl = data.buyer_fiber_rpc_url || null;
+                console.log('Fiber config:', { sellerFiberRpcUrl, buyerFiberRpcUrl });
+            } catch (e) {
+                console.warn('Failed to load Fiber config:', e);
+            }
+        }
+
         async function switchUser() {
             currentUserId = document.getElementById('userSelect').value;
             updateTabVisibility();
@@ -465,7 +586,6 @@
             const tabArbiter = document.getElementById('tab-arbiter');
             const balanceElement = document.getElementById('balance');
 
-            // Default: hide everything
             tabMarket.style.display = 'none';
             tabOrders.style.display = 'none';
             tabArbiter.style.display = 'none';
@@ -490,13 +610,26 @@
 
         async function updateBalance() {
             if (!currentUserId) return;
+            const rpcUrl = getCurrentFiberRpcUrl();
+            if (rpcUrl) {
+                // Get real balance from Fiber node
+                try {
+                    const balance = await fiberGetBalance(rpcUrl);
+                    document.getElementById('balance').textContent = `${balance.toLocaleString()} shannons`;
+                    return;
+                } catch (e) {
+                    console.warn('Failed to get Fiber balance:', e);
+                }
+            }
+            // Fallback: get simulated balance from backend
             const data = await api('GET', '/user/me');
             if (data.balance_shannons !== undefined) {
                 document.getElementById('balance').textContent = `${data.balance_shannons.toLocaleString()} shannons`;
             }
         }
 
-        // Products
+        // ============ Products ============
+
         async function loadProducts() {
             const data = await api('GET', '/products');
             const list = document.getElementById('productList');
@@ -527,6 +660,8 @@
             `).join('');
         }
 
+        // ============ Buy flow ============
+
         async function buyProduct(productId) {
             // Get product info for display
             const productsData = await api('GET', '/products');
@@ -541,8 +676,10 @@
             document.getElementById('purchasePrice').textContent = product.price_shannons.toLocaleString();
             document.getElementById('purchaseInvoiceSection').style.display = 'none';
             document.getElementById('purchaseLoading').style.display = 'block';
+            document.getElementById('purchaseLoading').textContent = 'Creating order...';
             document.getElementById('purchaseError').style.display = 'none';
             document.getElementById('purchaseConfirmBtn').disabled = true;
+            document.getElementById('purchaseConfirmBtn').textContent = 'Waiting for seller invoice...';
             document.getElementById('purchaseModal').classList.add('active');
 
             // Generate preimage and create order
@@ -561,27 +698,31 @@
                 orderPreimages[data.order_id] = preimageHex;
                 localStorage.setItem(`preimage_${data.order_id}`, preimageHex);
 
-                // Store pending purchase info
                 pendingPurchase = {
                     productId: productId,
                     productTitle: product.title,
-                    price: product.price_sat,
+                    price: product.price_shannons,
                     orderId: data.order_id,
-                    invoice: data.invoice_string,
+                    paymentHash: data.payment_hash,
                     preimageHex: preimageHex
                 };
 
-                // Show invoice
-                if (data.invoice_string) {
-                    document.getElementById('purchaseInvoice').textContent = data.invoice_string;
-                    document.getElementById('purchaseInvoiceSection').style.display = 'block';
-                    document.getElementById('purchaseConfirmBtn').disabled = false;
-                } else {
-                    // No Fiber configured on server, show mock mode message
-                    document.getElementById('purchaseError').textContent = 'Server not connected to Fiber. Order created in mock mode.';
-                    document.getElementById('purchaseError').style.display = 'block';
+                // Order created. Now we need seller to create invoice.
+                // In mock mode (no Fiber URLs), just close and show order.
+                if (!sellerFiberRpcUrl) {
                     closePurchaseModal();
-                    showToast('Order created (mock mode). Go to My Orders.');
+                    showToast('Order created (mock mode). Seller needs to submit invoice.');
+                    refresh();
+                } else {
+                    // Show waiting message - seller needs to create invoice on their node
+                    // (In a real app, seller's frontend would poll for new orders)
+                    document.getElementById('purchaseError').textContent = 
+                        'Order created! Waiting for seller to create invoice on their Fiber node. ' +
+                        'Switch to seller role, go to My Orders, and click "Create Invoice" to continue.';
+                    document.getElementById('purchaseError').style.display = 'block';
+                    document.getElementById('purchaseError').style.color = '#f39c12';
+                    closePurchaseModal();
+                    showToast('Order created! Seller needs to create invoice.');
                     refresh();
                 }
             } else {
@@ -595,57 +736,8 @@
             pendingPurchase = null;
         }
 
-        async function confirmPurchase() {
-            if (!pendingPurchase || !pendingPurchase.invoice) {
-                showToast('No pending purchase', true);
-                return;
-            }
+        // ============ Order actions ============
 
-            // Disable button and show loading
-            document.getElementById('purchaseConfirmBtn').disabled = true;
-            document.getElementById('purchaseConfirmBtn').textContent = 'Sending payment...';
-
-            try {
-                // Call buyer's Fiber node via backend proxy (backend has buyer RPC URL configured)
-                const paymentResult = await sendPaymentViaProxy(pendingPurchase.invoice);
-                console.log('Payment result:', paymentResult);
-
-                const status = (paymentResult.status || 'unknown').toLowerCase();
-                if (status === 'success' || status === 'inflight' || status === 'created') {
-                    document.getElementById('purchaseConfirmBtn').textContent = 'Verifying payment...';
-                    
-                    // Wait a moment for payment to propagate
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                    
-                    // Notify escrow to verify payment
-                    const verifyData = await api('POST', `/orders/${pendingPurchase.orderId}/pay`);
-                    
-                    closePurchaseModal();
-                    
-                    if (verifyData.status === 'funded') {
-                        showToast('Payment confirmed! Waiting for seller to ship.');
-                    } else {
-                        showToast('Payment sent! Verification pending.');
-                    }
-                    refresh();
-                } else {
-                    // Show more detailed error info
-                    const error = paymentResult.failed_error || paymentResult.error || `Unknown status: ${status}`;
-                    console.error('Payment failed:', paymentResult);
-                    document.getElementById('purchaseError').textContent = `Payment failed: ${error}`;
-                    document.getElementById('purchaseError').style.display = 'block';
-                    document.getElementById('purchaseConfirmBtn').disabled = false;
-                    document.getElementById('purchaseConfirmBtn').textContent = 'Confirm & Pay';
-                }
-            } catch (e) {
-                document.getElementById('purchaseError').textContent = `Payment error: ${e.message}`;
-                document.getElementById('purchaseError').style.display = 'block';
-                document.getElementById('purchaseConfirmBtn').disabled = false;
-                document.getElementById('purchaseConfirmBtn').textContent = 'Confirm & Pay';
-            }
-        }
-
-        // Orders
         async function loadOrders() {
             const data = await api('GET', '/orders/mine');
             const list = document.getElementById('orderList');
@@ -692,12 +784,23 @@
         function getOrderActions(order, isBuyer, isSeller) {
             const actions = [];
             
-            if (isBuyer && order.status === 'waiting_payment') {
+            // Seller: create invoice for orders waiting payment (no invoice yet)
+            if (isSeller && order.status === 'waiting_payment' && !order.invoice_string) {
+                actions.push(`<button class="btn btn-primary" onclick="createInvoiceForOrder('${order.id}', '${order.payment_hash}', ${order.amount_shannons})">Create Invoice</button>`);
+            }
+            // Buyer: pay order (invoice available, waiting payment)
+            if (isBuyer && order.status === 'waiting_payment' && order.invoice_string) {
                 actions.push(`<button class="btn btn-primary" onclick="payOrder('${order.id}')">Pay Now</button>`);
             }
+            // Buyer: waiting for seller to create invoice
+            if (isBuyer && order.status === 'waiting_payment' && !order.invoice_string) {
+                actions.push(`<span style="color: #f39c12; font-size: 0.85rem;">Waiting for seller invoice...</span>`);
+            }
+            // Seller: ship
             if (isSeller && order.status === 'funded') {
                 actions.push(`<button class="btn btn-primary" onclick="shipOrder('${order.id}')">Mark Shipped</button>`);
             }
+            // Buyer: confirm receipt or dispute
             if (isBuyer && order.status === 'shipped') {
                 actions.push(`<button class="btn btn-success" onclick="confirmOrder('${order.id}')">Confirm Receipt</button>`);
                 actions.push(`<button class="btn btn-danger" onclick="openDisputeModal('${order.id}')">Dispute</button>`);
@@ -705,71 +808,104 @@
             if (isBuyer && order.status === 'funded') {
                 actions.push(`<button class="btn btn-danger" onclick="openDisputeModal('${order.id}')">Dispute</button>`);
             }
+            // Seller: settle invoice (order completed, preimage available)
+            if (isSeller && order.status === 'completed' && order.invoice_string) {
+                actions.push(`<button class="btn btn-success" onclick="settleOrderInvoice('${order.id}')">Settle Invoice</button>`);
+            }
             
             return actions.join('');
         }
 
-        async function payOrder(orderId) {
-            // First, get the order details to get the invoice
-            const orderData = await api('GET', `/orders/${orderId}`);
-            // API returns order fields directly (not wrapped in {order: ...})
-            if (!orderData.invoice_string) {
-                showToast('Order not found or no invoice available', true);
+        /**
+         * Seller creates a hold invoice on their Fiber node and submits it to the escrow.
+         */
+        async function createInvoiceForOrder(orderId, paymentHash, amountShannons) {
+            if (invoiceCreatedFor.has(orderId)) {
+                showToast('Invoice already created for this order', true);
                 return;
             }
 
-            const invoice = orderData.invoice_string;
-            showToast('Sending payment via your Fiber node...');
-
-            try {
-                // Call buyer's Fiber node via backend proxy (backend has buyer RPC URL configured)
-                const paymentResult = await sendPaymentViaProxy(invoice);
-                console.log('=== Payment Result ===');
-                console.log('Full result:', JSON.stringify(paymentResult, null, 2));
-                console.log('Status:', paymentResult.status);
-                console.log('Payment hash:', paymentResult.payment_hash);
-                console.log('Failed error:', paymentResult.failed_error);
-
-                // Check payment status (Fiber returns PascalCase: Created, Inflight, Success)
-                const status = (paymentResult.status || 'unknown').toLowerCase();
-                if (status === 'success' || status === 'inflight' || status === 'created') {
-                    showToast('Payment sent! Verifying with escrow...');
-                    
-                    // Give the payment a moment to propagate, then verify with escrow
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                    
-                    // Notify escrow to check payment status
-                    const verifyData = await api('POST', `/orders/${orderId}/pay`);
-                    if (verifyData.status === 'funded') {
-                        showToast('Payment confirmed! Waiting for seller to ship.');
-                        refresh();
-                    } else {
-                        showToast('Payment sent but not yet confirmed. Try refreshing in a moment.', true);
-                        refresh();
-                    }
+            if (!sellerFiberRpcUrl) {
+                // Mock mode: submit a fake invoice string
+                const fakeInvoice = `mock_invoice_${paymentHash}`;
+                const submitData = await api('POST', `/orders/${orderId}/invoice`, { invoice: fakeInvoice });
+                if (submitData.status === 'invoice_submitted') {
+                    invoiceCreatedFor.add(orderId);
+                    showToast('Invoice submitted (mock mode)');
+                    refresh();
                 } else {
-                    const error = paymentResult.failed_error || paymentResult.error || `Unknown status: ${status}`;
-                    console.error('Payment failed:', paymentResult);
-                    showToast(`Payment failed: ${error}`, true);
+                    showToast(submitData.error || 'Failed to submit invoice', true);
+                }
+                return;
+            }
+
+            showToast('Creating invoice on your Fiber node...');
+            try {
+                const invoiceString = await fiberNewInvoice(
+                    sellerFiberRpcUrl,
+                    paymentHash,
+                    amountShannons,
+                    `Escrow order ${orderId.slice(0, 8)}`
+                );
+                console.log('Created invoice:', invoiceString);
+
+                // Submit invoice to escrow backend
+                const submitData = await api('POST', `/orders/${orderId}/invoice`, { invoice: invoiceString });
+                if (submitData.status === 'invoice_submitted') {
+                    invoiceCreatedFor.add(orderId);
+                    showToast('Invoice created and submitted! Buyer can now pay.');
+                    refresh();
+                } else {
+                    showToast(submitData.error || 'Failed to submit invoice', true);
                 }
             } catch (e) {
-                showToast(`Payment error: ${e.message}`, true);
+                showToast(`Failed to create invoice: ${e.message}`, true);
             }
         }
 
-        // Fiber RPC helper (uses backend proxy which has buyer RPC URL configured)
-        async function sendPaymentViaProxy(invoice) {
-            const response = await fetch('/api/fiber/send_payment', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ invoice: invoice })
-            });
-
-            const result = await response.json();
-            if (result.error) {
-                throw new Error(result.error);
+        /**
+         * Buyer pays for an order by sending payment to the invoice on their Fiber node.
+         */
+        async function payOrder(orderId) {
+            const orderData = await api('GET', `/orders/${orderId}`);
+            if (!orderData.invoice_string) {
+                showToast('No invoice available yet', true);
+                return;
             }
-            return result;
+
+            if (!buyerFiberRpcUrl) {
+                // Mock mode: just notify escrow
+                const verifyData = await api('POST', `/orders/${orderId}/pay`);
+                if (verifyData.status === 'funded') {
+                    showToast('Payment confirmed (mock mode)! Waiting for seller to ship.');
+                } else {
+                    showToast(verifyData.error || 'Failed to confirm payment', true);
+                }
+                refresh();
+                return;
+            }
+
+            showToast('Sending payment via your Fiber node...');
+            try {
+                const paymentResult = await fiberSendPayment(buyerFiberRpcUrl, orderData.invoice_string);
+                console.log('Payment result:', paymentResult);
+
+                showToast('Payment sent! Notifying escrow...');
+
+                // Wait briefly for payment to propagate
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                // Notify escrow
+                const verifyData = await api('POST', `/orders/${orderId}/pay`);
+                if (verifyData.status === 'funded') {
+                    showToast('Payment confirmed! Waiting for seller to ship.');
+                } else {
+                    showToast('Payment sent! Escrow notified.');
+                }
+                refresh();
+            } catch (e) {
+                showToast(`Payment error: ${e.message}`, true);
+            }
         }
 
         async function shipOrder(orderId) {
@@ -783,21 +919,62 @@
         }
 
         async function confirmOrder(orderId) {
-            // Preimage is already stored in escrow, just confirm receipt
             const data = await api('POST', `/orders/${orderId}/confirm`, {});
             if (data.status === 'completed') {
-                // Clean up local preimage storage
                 delete orderPreimages[orderId];
                 localStorage.removeItem(`preimage_${orderId}`);
-                
-                showToast('Order completed! Funds released to seller.');
+                showToast('Order completed! Seller can now settle the invoice.');
                 refresh();
             } else {
                 showToast(data.error || 'Failed to confirm', true);
             }
         }
 
-        // Disputes
+        /**
+         * Seller settles the hold invoice on their Fiber node using the preimage.
+         */
+        async function settleOrderInvoice(orderId) {
+            if (settledFor.has(orderId)) {
+                showToast('Invoice already settled for this order', true);
+                return;
+            }
+
+            // Get order details to get preimage
+            const orderData = await api('GET', `/orders/${orderId}`);
+            if (!orderData.preimage) {
+                showToast('Preimage not available yet', true);
+                return;
+            }
+            if (!orderData.payment_hash) {
+                showToast('Payment hash not available', true);
+                return;
+            }
+
+            if (!sellerFiberRpcUrl) {
+                // Mock mode
+                settledFor.add(orderId);
+                showToast('Invoice settled (mock mode)');
+                refresh();
+                return;
+            }
+
+            showToast('Settling invoice on your Fiber node...');
+            try {
+                // Ensure both have 0x prefix
+                const preimage = orderData.preimage.startsWith('0x') ? orderData.preimage : '0x' + orderData.preimage;
+                const paymentHash = orderData.payment_hash.startsWith('0x') ? orderData.payment_hash : '0x' + orderData.payment_hash;
+
+                await fiberSettleInvoice(sellerFiberRpcUrl, paymentHash, preimage);
+                settledFor.add(orderId);
+                showToast('Invoice settled! Funds received.');
+                refresh();
+            } catch (e) {
+                showToast(`Failed to settle invoice: ${e.message}`, true);
+            }
+        }
+
+        // ============ Disputes ============
+
         function openDisputeModal(orderId) {
             disputeOrderId = orderId;
             document.getElementById('disputeModal').classList.add('active');
@@ -863,25 +1040,49 @@
             const data = await api('POST', `/arbiter/disputes/${orderId}/resolve`, { resolution });
             if (data.status === 'resolved') {
                 showToast(`Dispute resolved in favor of ${resolution}`);
+
+                // If resolved to seller and we have seller RPC, settle the invoice
+                if (resolution === 'seller' && data.preimage && sellerFiberRpcUrl) {
+                    try {
+                        // Need to get the order's payment_hash
+                        // The preimage is returned in the resolve response
+                        const preimage = data.preimage.startsWith('0x') ? data.preimage : '0x' + data.preimage;
+                        // We need to look up the order for payment_hash
+                        // For now, arbiter doesn't settle - seller does when they see the completed order
+                        console.log('Dispute resolved to seller, preimage available:', preimage);
+                    } catch (e) {
+                        console.warn('Auto-settle after dispute failed:', e);
+                    }
+                }
+
+                // If resolved to buyer and we have seller RPC, cancel the invoice
+                if (resolution === 'buyer' && sellerFiberRpcUrl) {
+                    // Seller needs to cancel invoice on their node
+                    // This would happen when seller views their orders
+                    console.log('Dispute resolved to buyer - seller should cancel invoice');
+                }
+
                 refresh();
             } else {
                 showToast(data.error || 'Failed to resolve', true);
             }
         }
 
-        // Time simulation
+        // ============ Time simulation ============
+
         async function advanceTime(seconds) {
             const data = await api('POST', '/system/tick', { seconds });
             const expired = data.expired_orders || [];
             if (expired.length > 0) {
-                showToast(`${expired.length} order(s) auto-confirmed!`);
+                showToast(`${expired.length} order(s) auto-confirmed! Seller can settle invoices.`);
             } else {
                 showToast(`Time advanced by ${seconds} seconds`);
             }
             refresh();
         }
 
-        // Utilities
+        // ============ Utilities ============
+
         function escapeHtml(text) {
             if (!text) return '';
             const div = document.createElement('div');
@@ -897,7 +1098,8 @@
             else if (activeTab === 'arbiter') loadDisputes();
         }
 
-        // Initialize
+        // ============ Initialize ============
+
         // Load stored preimages from localStorage
         for (let i = 0; i < localStorage.length; i++) {
             const key = localStorage.key(i);
@@ -906,7 +1108,9 @@
                 orderPreimages[orderId] = localStorage.getItem(key);
             }
         }
-        loadUsers().then(() => refresh());
+
+        // Load config (Fiber RPC URLs) then users
+        loadConfig().then(() => loadUsers().then(() => refresh()));
     </script>
 </body>
 </html>

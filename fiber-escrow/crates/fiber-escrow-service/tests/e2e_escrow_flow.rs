@@ -104,7 +104,7 @@ fn get_user_id_by_username(client: &EscrowClient, username: &str) -> String {
         .expect("users should be array")
         .iter()
         .find(|u| u["username"].as_str() == Some(username))
-        .expect(&format!("User {} not found", username))["id"]
+        .unwrap_or_else(|| panic!("User {} not found", username))["id"]
         .as_str()
         .expect("user id should be string")
         .to_string()
@@ -275,9 +275,8 @@ fn test_escrow_happy_path() {
     let seller_preimage = seller_order_details["preimage"]
         .as_str()
         .expect("Seller should see preimage after completion");
-    // Preimage returned is without 0x prefix
-    let buyer_preimage_no_prefix = buyer_preimage.strip_prefix("0x").unwrap_or(&buyer_preimage);
-    assert_eq!(seller_preimage, buyer_preimage_no_prefix);
+    // Both should have 0x prefix now
+    assert_eq!(seller_preimage, &buyer_preimage);
     println!(
         "Seller retrieved preimage for settlement: {}",
         seller_preimage
@@ -542,8 +541,8 @@ fn test_escrow_dispute_resolved_to_seller() {
     let resolved_preimage = resolve_resp["preimage"]
         .as_str()
         .expect("Preimage should be available for seller resolution");
-    let buyer_preimage_no_prefix = buyer_preimage.strip_prefix("0x").unwrap_or(&buyer_preimage);
-    assert_eq!(resolved_preimage, buyer_preimage_no_prefix);
+    // Both should have 0x prefix
+    assert_eq!(resolved_preimage, &buyer_preimage);
     println!(
         "Dispute resolved to seller, preimage: {}",
         resolved_preimage
@@ -687,8 +686,8 @@ fn test_escrow_order_timeout() {
     let seller_preimage = preimage_value
         .as_str()
         .expect("Preimage should be available after timeout completion");
-    let buyer_preimage_no_prefix = buyer_preimage.strip_prefix("0x").unwrap_or(&buyer_preimage);
-    assert_eq!(seller_preimage, buyer_preimage_no_prefix);
+    // Both should have 0x prefix
+    assert_eq!(seller_preimage, &buyer_preimage);
 
     println!("Test passed: Order timeout flow - escrow auto-settled with stored preimage");
 

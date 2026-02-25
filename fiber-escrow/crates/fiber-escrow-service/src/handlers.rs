@@ -1,4 +1,7 @@
 //! HTTP API handlers.
+//!
+//! All Fiber node interactions are handled by the frontend.
+//! The backend manages order state and reveals preimage when appropriate.
 
 use axum::{
     extract::{Path, State},
@@ -6,7 +9,6 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fiber_core::FiberClient;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -134,7 +136,7 @@ pub async fn register_user(
     Json(req): Json<RegisterRequest>,
 ) -> impl IntoResponse {
     // Check if username already exists
-    if state.get_user_by_username(&req.username).await.is_some() {
+    if state.get_user_by_username(&req.username).is_some() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "Username already exists"})),
@@ -162,7 +164,7 @@ pub async fn get_current_user(
         }
     };
 
-    match state.get_user(user_id).await {
+    match state.get_user(user_id) {
         Some(user) => (
             StatusCode::OK,
             Json(serde_json::json!(UserResponse::from(user))),
@@ -175,7 +177,7 @@ pub async fn get_current_user(
 }
 
 pub async fn list_users(State(state): State<AppState>) -> impl IntoResponse {
-    let users: Vec<UserResponse> = state.list_users().await.into_iter().map(Into::into).collect();
+    let users: Vec<UserResponse> = state.list_users().into_iter().map(Into::into).collect();
     Json(serde_json::json!({"users": users}))
 }
 
@@ -206,7 +208,7 @@ pub async fn create_product(
 pub async fn list_products(State(state): State<AppState>) -> impl IntoResponse {
     let mut products = Vec::new();
     for p in state.list_available_products() {
-        let seller = state.get_user(p.seller_id).await;
+        let seller = state.get_user(p.seller_id);
         products.push(ProductResponse {
             id: p.id.0,
             seller_id: p.seller_id.0,
@@ -263,7 +265,7 @@ fn order_to_response(order: &Order) -> OrderResponse {
         seller_id: order.seller_id.0,
         buyer_id: order.buyer_id.0,
         amount_shannons: order.amount_shannons,
-        payment_hash: order.payment_hash.to_string(),
+        payment_hash: order.payment_hash.to_hex(),
         invoice_string: order.invoice_string.clone(),
         status: order.status,
         created_at: order.created_at.to_rfc3339(),
@@ -322,7 +324,7 @@ pub async fn create_order(
     }
 
     // Create order with computed payment_hash
-    let order = state.create_order(&product, buyer_id, payment_hash.clone());
+    let order = state.create_order(&product, buyer_id, payment_hash);
 
     // Store preimage immediately (escrow holds it for timeout/dispute settlement)
     tracing::info!(
@@ -333,40 +335,16 @@ pub async fn create_order(
     );
     state.set_revealed_preimage(order.id, preimage);
 
-    // If Fiber client is configured, create hold invoice on seller's node
-    let invoice_string = if let Some(fiber_client) = state.seller_fiber_client() {
-        match fiber_client
-            .create_hold_invoice(&payment_hash, order.amount_shannons, 24 * 60 * 60) // 24 hour expiry
-            .await
-        {
-            Ok(invoice) => {
-                // Store invoice string in order
-                state.set_order_invoice(order.id, invoice.invoice_string.clone());
-                Some(invoice.invoice_string)
-            }
-            Err(e) => {
-                // TODO: Also need to delete the order from state
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": format!("Failed to create hold invoice: {}", e)
-                    })),
-                );
-            }
-        }
-    } else {
-        // No Fiber client - mock mode, no invoice created
-        None
-    };
+    // No Fiber RPC calls — seller's frontend will create the hold invoice
+    // using the payment_hash, and submit it back via /api/orders/:id/invoice
 
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "order_id": order.id.0,
-            "payment_hash": order.payment_hash.to_string(),
+            "payment_hash": order.payment_hash.to_hex(),
             "amount_shannons": order.amount_shannons,
-            "expires_at": order.expires_at.to_rfc3339(),
-            "invoice_string": invoice_string
+            "expires_at": order.expires_at.to_rfc3339()
         })),
     )
 }
@@ -427,12 +405,12 @@ pub async fn get_order(
         );
     }
 
-    // Include preimage for seller if order is completed
+    // Include preimage for seller if order is completed (for Fiber settlement)
     let mut response = serde_json::json!(order_to_response(&order));
     
     if order.seller_id == user_id && order.status == OrderStatus::Completed {
         if let Some(preimage) = state.get_revealed_preimage(order_id) {
-            response["preimage"] = serde_json::json!(hex::encode(preimage.as_bytes()));
+            response["preimage"] = serde_json::json!(format!("0x{}", hex::encode(preimage.as_bytes())));
         }
     }
 
@@ -546,62 +524,8 @@ pub async fn pay_order(
         );
     }
 
-    // If Fiber client is configured, verify payment status on seller's node
-    // Buyer should have already paid the invoice from their own wallet
-    if let Some(seller_client) = state.seller_fiber_client() {
-        // Poll for payment to be held (max 30 seconds, check every 2 seconds)
-        // This gives time for the payment to propagate through the network
-        let max_attempts = 15;
-        let mut confirmed = false;
-
-        for attempt in 0..max_attempts {
-            match seller_client.get_payment_status(&order.payment_hash).await {
-                Ok(status) => {
-                    tracing::debug!(
-                        "Payment status check {}/{}: {:?}",
-                        attempt + 1,
-                        max_attempts,
-                        status
-                    );
-                    match status {
-                        fiber_core::PaymentStatus::Held => {
-                            confirmed = true;
-                            break;
-                        }
-                        fiber_core::PaymentStatus::Settled => {
-                            // Already settled (shouldn't happen at this stage)
-                            confirmed = true;
-                            break;
-                        }
-                        fiber_core::PaymentStatus::Cancelled => {
-                            return (
-                                StatusCode::BAD_REQUEST,
-                                Json(serde_json::json!({"error": "Payment was cancelled"})),
-                            );
-                        }
-                        fiber_core::PaymentStatus::Pending => {
-                            // Still waiting, continue polling
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to check payment status: {}", e);
-                }
-            }
-
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        }
-
-        if !confirmed {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Payment not received. Please pay the invoice first, then call this endpoint."
-                })),
-            );
-        }
-    }
-    // If no Fiber client configured, operate in trust mode (for testing)
+    // No Fiber RPC calls — buyer's frontend sends payment directly to their node.
+    // This endpoint is called after the buyer's frontend confirms payment was sent.
 
     // Update order status to funded
     state.update_order_status(order_id, OrderStatus::Funded);
@@ -723,23 +647,9 @@ pub async fn confirm_order(
     // Mark order as completed
     state.update_order_status(order_id, OrderStatus::Completed);
 
-    // If Fiber client is configured, settle the hold invoice on seller's node
-    if let Some(fiber_client) = state.seller_fiber_client() {
-        if let Err(e) = fiber_client
-            .settle_invoice(&order.payment_hash, &preimage)
-            .await
-        {
-            // Log but don't fail - order is already confirmed locally
-            // The settlement can be retried or handled manually
-            tracing::error!(
-                "Failed to settle invoice for order {}: {}. Manual settlement may be required.",
-                order_id.0,
-                e
-            );
-        } else {
-            tracing::info!("Invoice settled for order {}", order_id.0);
-        }
-    }
+    // No Fiber RPC calls — seller's frontend will call settle_invoice
+    // after seeing the preimage in the order details.
+    tracing::info!("Order {} completed, preimage available for seller settlement", order_id.0);
 
     (
         StatusCode::OK,
@@ -844,68 +754,30 @@ pub async fn resolve_dispute(
         }
     };
 
-    // Handle Fiber invoice based on resolution
+    // Return preimage if resolving to seller (seller's frontend will call settle_invoice)
+    // If resolving to buyer, seller's frontend should call cancel_invoice
     let mut preimage_hex: Option<String> = None;
 
-    if let Some(fiber_client) = state.seller_fiber_client() {
-        match resolution {
-            DisputeResolution::ToSeller => {
-                // Settle invoice - seller gets paid
-                if let Some(preimage) = state.get_revealed_preimage(order_id) {
-                    match fiber_client
-                        .settle_invoice(&order.payment_hash, &preimage)
-                        .await
-                    {
-                        Ok(()) => {
-                            tracing::info!(
-                                "Settled invoice for disputed order {} (resolved to seller)",
-                                order_id.0
-                            );
-                            preimage_hex = Some(hex::encode(preimage.as_bytes()));
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to settle invoice for disputed order {}: {}",
-                                order_id.0,
-                                e
-                            );
-                            // Continue with resolution even if settlement fails
-                            // Manual intervention may be needed
-                        }
-                    }
-                } else {
-                    tracing::warn!(
-                        "No preimage found for disputed order {} - cannot settle invoice",
-                        order_id.0
-                    );
-                }
-            }
-            DisputeResolution::ToBuyer => {
-                // Cancel invoice - buyer gets refund
-                match fiber_client.cancel_invoice(&order.payment_hash).await {
-                    Ok(()) => {
-                        tracing::info!(
-                            "Cancelled invoice for disputed order {} (resolved to buyer)",
-                            order_id.0
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to cancel invoice for disputed order {}: {}",
-                            order_id.0,
-                            e
-                        );
-                        // Continue with resolution even if cancellation fails
-                    }
-                }
+    match resolution {
+        DisputeResolution::ToSeller => {
+            if let Some(preimage) = state.get_revealed_preimage(order_id) {
+                preimage_hex = Some(format!("0x{}", hex::encode(preimage.as_bytes())));
+                tracing::info!(
+                    "Dispute resolved to seller for order {} - preimage available for settlement",
+                    order_id.0
+                );
+            } else {
+                tracing::warn!(
+                    "No preimage found for disputed order {} - cannot provide for settlement",
+                    order_id.0
+                );
             }
         }
-    } else {
-        // No Fiber client - just update state and return preimage if resolving to seller
-        if resolution == DisputeResolution::ToSeller {
-            if let Some(preimage) = state.get_revealed_preimage(order_id) {
-                preimage_hex = Some(hex::encode(preimage.as_bytes()));
-            }
+        DisputeResolution::ToBuyer => {
+            tracing::info!(
+                "Dispute resolved to buyer for order {} - seller's frontend should cancel invoice",
+                order_id.0
+            );
         }
     }
 
@@ -929,135 +801,22 @@ pub async fn tick(State(state): State<AppState>, Json(req): Json<TickRequest>) -
     // Process expired orders (auto-confirm shipped orders)
     let expired_orders = state.process_expired_orders();
 
-    // Settle invoices for expired orders that have preimage
-    if let Some(fiber_client) = state.seller_fiber_client() {
-        for (order_id, payment_hash, preimage_opt) in &expired_orders {
-            if let Some(preimage) = preimage_opt {
-                match fiber_client.settle_invoice(payment_hash, preimage).await {
-                    Ok(()) => {
-                        tracing::info!("Settled invoice for expired order {}", order_id.0);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to settle invoice for expired order {}: {}",
-                            order_id.0,
-                            e
-                        );
-                    }
-                }
-            } else {
-                tracing::warn!(
-                    "Expired order {} has no preimage, cannot settle invoice",
-                    order_id.0
-                );
-            }
-        }
+    // No Fiber RPC calls — seller's frontend will see completed status
+    // and call settle_invoice using the preimage from order details.
+    for order_id in &expired_orders {
+        tracing::info!("Order {} expired and auto-completed, awaiting seller settlement", order_id.0);
     }
 
-    let expired: Vec<Uuid> = expired_orders.iter().map(|(id, _, _)| id.0).collect();
+    let expired: Vec<Uuid> = expired_orders.iter().map(|id| id.0).collect();
     Json(serde_json::json!(TickResponse { expired_orders: expired }))
 }
 
-// ============ Fiber RPC Proxy handlers ============
+// ============ Config handler ============
 
-#[derive(Deserialize)]
-pub struct SendPaymentProxyRequest {
-    /// Invoice to pay
-    pub invoice: String,
-}
-
-/// Proxy send_payment request to buyer's Fiber node
-/// Uses FIBER_BUYER_RPC_URL environment variable
-pub async fn send_payment_proxy(
-    State(state): State<AppState>,
-    Json(req): Json<SendPaymentProxyRequest>,
-) -> impl IntoResponse {
-    // Get buyer RPC URL from server config
-    let buyer_rpc_url = match state.buyer_fiber_rpc_url() {
-        Some(url) => url.to_string(),
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "Buyer Fiber RPC not configured (set FIBER_BUYER_RPC_URL)"})),
-            );
-        }
-    };
-
-    // Create HTTP client and send RPC request
-    let client = reqwest::Client::new();
-    
-    let rpc_request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "send_payment",
-        "params": [{"invoice": req.invoice}]
-    });
-
-    println!("[send_payment_proxy] Sending to {}: {}", buyer_rpc_url, serde_json::to_string(&rpc_request).unwrap_or_default());
-
-    match client
-        .post(&buyer_rpc_url)
-        .header("Content-Type", "application/json")
-        .json(&rpc_request)
-        .send()
-        .await
-    {
-        Ok(response) => {
-            let status_code = response.status();
-            match response.text().await {
-                Ok(text) => {
-                    println!("[send_payment_proxy] Raw response (HTTP {}): {}", status_code, text);
-                    
-                    match serde_json::from_str::<serde_json::Value>(&text) {
-                        Ok(json) => {
-                            // Log the parsed JSON structure
-                            if let Some(result) = json.get("result") {
-                                println!("[send_payment_proxy] Parsed result: {}", serde_json::to_string_pretty(result).unwrap_or_default());
-                                if let Some(status) = result.get("status") {
-                                    println!("[send_payment_proxy] Payment status: {}", status);
-                                }
-                                if let Some(failed_error) = result.get("failed_error") {
-                                    println!("[send_payment_proxy] Failed error: {}", failed_error);
-                                }
-                            }
-                            
-                            if let Some(error) = json.get("error") {
-                                let error_msg = error
-                                    .get("message")
-                                    .and_then(|m| m.as_str())
-                                    .unwrap_or("RPC error");
-                                (
-                                    StatusCode::BAD_REQUEST,
-                                    Json(serde_json::json!({"error": error_msg, "details": error})),
-                                )
-                            } else if let Some(result) = json.get("result") {
-                                // Return the full result, frontend will check status
-                                (StatusCode::OK, Json(result.clone()))
-                            } else {
-                                (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    Json(serde_json::json!({"error": "Invalid RPC response", "raw": text})),
-                                )
-                            }
-                        }
-                        Err(e) => (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({"error": format!("Failed to parse JSON: {}", e), "raw": text})),
-                        ),
-                    }
-                }
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("Failed to read response: {}", e)})),
-                ),
-            }
-        }
-        Err(e) => {
-            println!("[send_payment_proxy] Connection error: {}", e);
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({"error": format!("Failed to connect to Fiber node: {}", e)})),
-            )
-        }
-    }
+/// Returns Fiber RPC URLs so the frontend knows where to send Fiber calls
+pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "seller_fiber_rpc_url": state.seller_fiber_rpc_url(),
+        "buyer_fiber_rpc_url": state.buyer_fiber_rpc_url()
+    }))
 }

@@ -1,6 +1,8 @@
 //! Fiber Game Demo Service
 //!
 //! Combined service with Oracle and two Players on a single port.
+//! All Fiber RPC calls are made by the frontend directly — the backend
+//! only handles game state management and Oracle communication.
 //! 
 //! Routes:
 //! - `/` - Unified Web UI with Player A/B role switcher
@@ -17,7 +19,6 @@ use axum::{
 };
 use fiber_game_core::{
     crypto::{Commitment, EncryptedPreimage, PaymentHash, Preimage, Salt},
-    fiber::{FiberClient, HoldInvoice, MockFiberClient, RpcFiberClient},
     games::{GameAction, GameJudge, GameType, OracleSecret},
     protocol::{GameId, GameResult, Player},
 };
@@ -694,7 +695,8 @@ struct PlayerState {
     player_name: String,
     oracle_url: String,
     http_client: Client,
-    fiber_client: Arc<dyn FiberClient>,
+    /// Fiber RPC URL for this player's node (configured via env var, exposed to frontend)
+    fiber_rpc_url: Option<String>,
     games: RwLock<HashMap<GameId, PlayerGameState>>,
 }
 
@@ -722,11 +724,11 @@ struct PlayerGameState {
     opponent_action: Option<GameAction>,
     phase: PlayerGamePhase,
     result: Option<GameResult>,
-    /// My hold invoice (created with opponent's hash, paid by opponent, only opponent can settle)
-    my_invoice: Option<HoldInvoice>,
-    /// Opponent's hold invoice (created with my hash, I pay this, only I can settle)
-    opponent_invoice: Option<HoldInvoice>,
-    /// Whether we've completed the invoice exchange and payment
+    /// My invoice string (created by frontend on my Fiber node)
+    my_invoice_string: Option<String>,
+    /// Opponent's invoice string (retrieved from Oracle, paid by frontend)
+    opponent_invoice_string: Option<String>,
+    /// Whether the frontend has reported paying opponent's invoice
     paid_opponent: bool,
 }
 
@@ -743,13 +745,13 @@ enum PlayerGamePhase {
 }
 
 impl PlayerState {
-    fn new(player_id: Uuid, player_name: String, oracle_url: String, fiber_client: Arc<dyn FiberClient>) -> Self {
+    fn new(player_id: Uuid, player_name: String, oracle_url: String, fiber_rpc_url: Option<String>) -> Self {
         Self {
             player_id,
             player_name,
             oracle_url,
             http_client: Client::new(),
-            fiber_client,
+            fiber_rpc_url,
             games: RwLock::new(HashMap::new()),
         }
     }
@@ -763,7 +765,7 @@ impl PlayerState {
 struct PlayerInfoResponse {
     player_id: Uuid,
     player_name: String,
-    balance: u64,
+    fiber_rpc_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -831,6 +833,12 @@ struct PlayerGameStatusResponse {
     my_action: Option<GameAction>,
     opponent_action: Option<GameAction>,
     can_settle: bool,
+    /// Opponent's payment_hash (hex) — frontend uses this to create hold invoice
+    opponent_payment_hash: Option<String>,
+    /// Opponent's preimage (hex) — revealed by Oracle if this player won, used to settle
+    opponent_preimage: Option<String>,
+    /// My payment_hash (hex) — needed for settle/cancel
+    my_payment_hash: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -839,17 +847,37 @@ struct SettleResponse {
     amount_won: i64,
 }
 
+/// Request from frontend reporting that it created an invoice on its Fiber node
+#[derive(Deserialize)]
+struct InvoiceCreatedRequest {
+    invoice_string: String,
+}
+
+/// Request from frontend reporting that it paid the opponent's invoice
+#[derive(Deserialize)]
+struct PaymentDoneRequest {
+    // placeholder for future fields if needed
+}
+
+#[derive(Serialize)]
+struct InvoiceCreatedResponse {
+    status: String,
+}
+
+#[derive(Serialize)]
+struct PaymentDoneResponse {
+    status: String,
+}
+
 // ============================================================================
 // Player Route Handlers (Generic for both Player A and B)
 // ============================================================================
 
 async fn player_get_info(State(player): State<Arc<PlayerState>>) -> Result<Json<PlayerInfoResponse>, AppError> {
-    let balance = player.fiber_client.get_balance().await
-        .map_err(|e| AppError(format!("Failed to get balance: {}", e)))?;
     Ok(Json(PlayerInfoResponse {
         player_id: player.player_id,
         player_name: player.player_name.clone(),
-        balance,
+        fiber_rpc_url: player.fiber_rpc_url.clone(),
     }))
 }
 
@@ -906,77 +934,38 @@ async fn player_get_my_games(State(player): State<Arc<PlayerState>>) -> Json<MyG
             .collect()
     };
 
-    // Update phase for games where opponent has joined, and create invoice if needed
-    for (game_id, amount) in games_to_check {
+    // Update phase for games where opponent has joined
+    for (game_id, _amount) in games_to_check {
         let url = format!("{}/game/{}/status", player.oracle_url, game_id);
         if let Ok(resp) = player.http_client.get(&url).send().await {
             if let Ok(status_data) = resp.json::<serde_json::Value>().await {
                 if status_data["has_opponent"].as_bool() == Some(true) {
-                    // Check if we need to create invoice
-                    let needs_invoice = {
-                        let games = player.games.read().unwrap();
-                        games.get(&game_id).map(|g| g.my_invoice.is_none()).unwrap_or(false)
-                    };
-
-                    let mut invoice_created = !needs_invoice;
-
-                    if needs_invoice {
-                        // Get opponent's (B's) payment_hash and create invoice
-                        let get_hash_url = format!("{}/game/{}/payment-hash/B", player.oracle_url, game_id);
-                        if let Ok(hash_resp) = player.http_client.get(&get_hash_url).send().await {
-                            if hash_resp.status().is_success() {
-                                if let Ok(hash_data) = hash_resp.json::<serde_json::Value>().await {
-                                    if let Some(hash_array) = hash_data["payment_hash"].as_array() {
-                                        let hash_bytes: Vec<u8> = hash_array
-                                            .iter()
-                                            .map(|v| v.as_u64().unwrap_or(0) as u8)
-                                            .collect();
+                    // Get opponent's (B's) payment_hash so frontend can create invoice
+                    let get_hash_url = format!("{}/game/{}/payment-hash/B", player.oracle_url, game_id);
+                    if let Ok(hash_resp) = player.http_client.get(&get_hash_url).send().await {
+                        if hash_resp.status().is_success() {
+                            if let Ok(hash_data) = hash_resp.json::<serde_json::Value>().await {
+                                if let Some(hash_array) = hash_data["payment_hash"].as_array() {
+                                    let hash_bytes: Vec<u8> = hash_array
+                                        .iter()
+                                        .map(|v| v.as_u64().unwrap_or(0) as u8)
+                                        .collect();
+                                    
+                                    if let Ok(hash_arr) = <[u8; 32]>::try_from(hash_bytes.as_slice()) {
+                                        let opponent_payment_hash = PaymentHash::from_bytes(hash_arr);
                                         
-                                        if let Ok(hash_arr) = <[u8; 32]>::try_from(hash_bytes.as_slice()) {
-                                            let opponent_payment_hash = PaymentHash::from_bytes(hash_arr);
-                                            
-                                            if let Ok(invoice) = player.fiber_client
-                                                .create_hold_invoice(&opponent_payment_hash, amount, 3600)
-                                                .await
-                                            {
-                                                info!("{}: Created hold invoice in get_my_games for game {:?}", player.player_name, game_id);
-
-                                                // Submit invoice to Oracle
-                                                let submit_url = format!("{}/game/{}/invoice", player.oracle_url, game_id);
-                                                let submit_body = serde_json::json!({
-                                                    "player": Player::A,
-                                                    "invoice_string": invoice.invoice_string,
-                                                });
-                                                
-                                                let _ = player.http_client
-                                                    .post(&submit_url)
-                                                    .json(&submit_body)
-                                                    .send()
-                                                    .await;
-
-                                                info!("{}: Submitted invoice to Oracle in get_my_games for game {:?}", player.player_name, game_id);
-
-                                                // Store invoice info
-                                                let mut games = player.games.write().unwrap();
-                                                if let Some(game) = games.get_mut(&game_id) {
-                                                    game.opponent_payment_hash = Some(opponent_payment_hash);
-                                                    game.my_invoice = Some(invoice);
-                                                }
-                                                
-                                                invoice_created = true;
-                                            }
+                                        let mut games = player.games.write().unwrap();
+                                        if let Some(game) = games.get_mut(&game_id) {
+                                            game.opponent_payment_hash = Some(opponent_payment_hash);
+                                            // Transition to WaitingForAction — frontend will
+                                            // handle invoice creation via Fiber RPC
+                                            game.phase = PlayerGamePhase::WaitingForAction;
                                         }
+                                        
+                                        info!("{}: Opponent joined game {:?}, got opponent payment_hash", player.player_name, game_id);
                                     }
                                 }
                             }
-                        }
-                    }
-
-                    // Only update phase if invoice created successfully
-                    if invoice_created {
-                        let mut games = player.games.write().unwrap();
-                        if let Some(game) = games.get_mut(&game_id) {
-                            game.phase = PlayerGamePhase::WaitingForAction;
                         }
                     }
                 }
@@ -1073,8 +1062,8 @@ async fn player_create_game(
         opponent_action: None,
         phase: PlayerGamePhase::WaitingForOpponent,
         result: None,
-        my_invoice: None,
-        opponent_invoice: None,
+        my_invoice_string: None,
+        opponent_invoice_string: None,
         paid_opponent: false,
     };
 
@@ -1146,8 +1135,8 @@ async fn player_join_game(
     let salt = Salt::random();
 
     // =========================================================================
-    // Invoice Setup: B gets A's hash, creates MY invoice, submits to Oracle
-    // B does NOT pay A's invoice yet (A hasn't created theirs yet)
+    // Payment hash setup: B submits its hash, gets A's hash
+    // Invoice creation is handled by the frontend via direct Fiber RPC
     // =========================================================================
 
     // 1. Submit MY (B's) payment_hash to Oracle (so A can get it to create their invoice)
@@ -1200,35 +1189,15 @@ async fn player_join_game(
 
     info!("{}: Got opponent's payment_hash for game {:?}", player.player_name, req.game_id);
 
-    // 3. Create MY invoice using OPPONENT's payment_hash
-    // (Opponent will pay this, only opponent can settle with their preimage)
-    let my_invoice = player.fiber_client
-        .create_hold_invoice(&opponent_payment_hash, amount_shannons, 3600)
-        .await
-        .map_err(|e| AppError(format!("Failed to create hold invoice: {}", e)))?;
-    
-    info!("{}: Created hold invoice with opponent's hash for game {:?}", player.player_name, req.game_id);
+    // Note: Invoice creation and payment are now handled by the frontend
+    // The frontend will:
+    // 1. Create a hold invoice on its Fiber node using opponent's payment_hash
+    // 2. Submit the invoice string to Oracle via POST /game/{id}/invoice
+    // 3. Report back via POST /game/{id}/invoice-created
+    // 4. Get opponent's invoice from Oracle and pay via Fiber RPC
+    // 5. Report back via POST /game/{id}/payment-done
 
-    // 4. Submit MY invoice_string to Oracle (so A can pay it)
-    let submit_invoice_url = format!("{}/game/{}/invoice", player.oracle_url, req.game_id);
-    let submit_invoice_body = serde_json::json!({
-        "player": Player::B,
-        "invoice_string": my_invoice.invoice_string,
-    });
-    
-    player.http_client
-        .post(&submit_invoice_url)
-        .json(&submit_invoice_body)
-        .send()
-        .await
-        .map_err(|e| AppError(format!("Failed to submit invoice: {}", e)))?;
-
-    info!("{}: Submitted invoice to Oracle for game {:?}", player.player_name, req.game_id);
-
-    // Note: We do NOT pay A's invoice yet because A hasn't created theirs yet.
-    // A will create their invoice when they first play, then we'll pay in our play.
-
-    // Save game state with invoice info
+    // Save game state
     let game_state = PlayerGameState {
         role: Player::B,
         game_type,
@@ -1247,14 +1216,14 @@ async fn player_join_game(
         opponent_action: None,
         phase: PlayerGamePhase::WaitingForAction,
         result: None,
-        my_invoice: Some(my_invoice),
-        opponent_invoice: None,  // Will be set when we get A's invoice in play
-        paid_opponent: false,    // Will pay when we get A's invoice_string
+        my_invoice_string: None,
+        opponent_invoice_string: None,
+        paid_opponent: false,
     };
 
     player.games.write().unwrap().insert(req.game_id, game_state);
 
-    info!("{}: Joined game {:?}, waiting for opponent to create their invoice", player.player_name, req.game_id);
+    info!("{}: Joined game {:?}", player.player_name, req.game_id);
 
     Ok(Json(PlayerJoinGameResponse {
         status: "joined".to_string(),
@@ -1267,157 +1236,10 @@ async fn player_play(
     Json(req): Json<PlayRequest>,
 ) -> Result<Json<PlayResponse>, AppError> {
     // =========================================================================
-    // Step 1: Handle Hold Invoice setup
+    // Game flow: commit + reveal
     // 
-    // Both players need to:
-    // 1. Get opponent's invoice info (payment_hash + invoice_string)
-    // 2. Create MY invoice (if not already created) using opponent's payment_hash
-    // 3. Submit MY invoice info to Oracle (if not already submitted)
-    // 4. Pay opponent's invoice using their invoice_string
-    // =========================================================================
-    let needs_invoice_setup = {
-        let games = player.games.read().unwrap();
-        let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
-        !game.paid_opponent
-    };
-
-    if needs_invoice_setup {
-        // Get my info
-        let (my_payment_hash, amount, role, my_invoice_exists) = {
-            let games = player.games.read().unwrap();
-            let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
-            (game.payment_hash, game.amount_shannons, game.role, game.my_invoice.is_some())
-        };
-
-        // Get OPPONENT's payment_hash from Oracle (separate API)
-        let opponent = role.opponent();
-        let get_payment_hash_url = format!("{}/game/{}/payment-hash/{}", player.oracle_url, game_id, opponent);
-        
-        let opponent_hash_resp = player.http_client
-            .get(&get_payment_hash_url)
-            .send()
-            .await
-            .map_err(|e| AppError(format!("Failed to get opponent payment hash: {}", e)))?;
-
-        if !opponent_hash_resp.status().is_success() {
-            return Err(AppError("Opponent hasn't submitted their payment hash yet. Please wait.".to_string()));
-        }
-
-        let opponent_hash_data: serde_json::Value = opponent_hash_resp
-            .json()
-            .await
-            .map_err(|e| AppError(format!("Failed to parse opponent payment hash: {}", e)))?;
-
-        // Parse opponent's payment_hash
-        let opponent_payment_hash_array = opponent_hash_data["payment_hash"]
-            .as_array()
-            .ok_or_else(|| AppError("Invalid opponent payment hash format: expected array".to_string()))?;
-        
-        let opponent_payment_hash_bytes: Vec<u8> = opponent_payment_hash_array
-            .iter()
-            .map(|v| v.as_u64().unwrap_or(0) as u8)
-            .collect();
-        
-        let opponent_payment_hash = PaymentHash::from_bytes(
-            opponent_payment_hash_bytes.as_slice().try_into()
-                .map_err(|_| AppError("Invalid payment hash length".to_string()))?
-        );
-
-        // Step 1: Create MY invoice first (if not exists), using opponent's payment_hash
-        // This allows the other player to pay me even if they haven't created their invoice yet
-        let my_invoice = if !my_invoice_exists {
-            let invoice = player.fiber_client
-                .create_hold_invoice(&opponent_payment_hash, amount, 3600)
-                .await
-                .map_err(|e| AppError(format!("Failed to create hold invoice: {}", e)))?;
-            
-            info!("{}: Created hold invoice with opponent's hash for game {:?}", player.player_name, game_id);
-
-            // Submit MY invoice_string to Oracle (so opponent can pay it)
-            let submit_invoice_url = format!("{}/game/{}/invoice", player.oracle_url, game_id);
-            let submit_invoice_body = serde_json::json!({
-                "player": role,
-                "invoice_string": invoice.invoice_string,
-            });
-            
-            player.http_client
-                .post(&submit_invoice_url)
-                .json(&submit_invoice_body)
-                .send()
-                .await
-                .map_err(|e| AppError(format!("Failed to submit invoice info: {}", e)))?;
-
-            info!("{}: Submitted invoice to Oracle for game {:?}", player.player_name, game_id);
-
-            // Store my invoice
-            {
-                let mut games = player.games.write().unwrap();
-                let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
-                game.opponent_payment_hash = Some(opponent_payment_hash);
-                game.my_invoice = Some(invoice);
-            }
-
-            true // Created new invoice
-        } else {
-            false
-        };
-
-        // Step 2: Get opponent's invoice and pay it (REQUIRED before play)
-        let get_invoice_url = format!("{}/game/{}/invoice/{}", player.oracle_url, game_id, opponent);
-        
-        let opponent_invoice_resp = player.http_client
-            .get(&get_invoice_url)
-            .send()
-            .await
-            .map_err(|e| AppError(format!("Failed to get opponent invoice: {}", e)))?;
-
-        if !opponent_invoice_resp.status().is_success() {
-            return Err(AppError("Opponent hasn't created their invoice yet. Please wait for them to be ready.".to_string()));
-        }
-
-        let opponent_invoice_data: serde_json::Value = opponent_invoice_resp
-            .json()
-            .await
-            .map_err(|e| AppError(format!("Failed to parse opponent invoice: {}", e)))?;
-
-        let opponent_invoice_string = opponent_invoice_data["invoice_string"]
-            .as_str()
-            .unwrap_or("");
-
-        if opponent_invoice_string.is_empty() {
-            return Err(AppError("Opponent hasn't created their invoice yet. Please wait for them to be ready.".to_string()));
-        }
-
-        // Opponent has invoice, pay it
-        let opponent_invoice = HoldInvoice {
-            payment_hash: my_payment_hash,  // Opponent's invoice uses MY hash (so I can settle)
-            amount,
-            expiry_secs: 3600,
-            invoice_string: opponent_invoice_string.to_string(),
-        };
-
-        player.fiber_client
-            .pay_hold_invoice(&opponent_invoice)
-            .await
-            .map_err(|e| AppError(format!("Failed to pay opponent invoice: {}", e)))?;
-
-        info!("{}: Paid opponent's invoice for game {:?}, amount: {}", player.player_name, game_id, amount);
-
-        // Mark as paid
-        {
-            let mut games = player.games.write().unwrap();
-            let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
-            game.opponent_invoice = Some(opponent_invoice);
-            game.paid_opponent = true;
-        }
-
-        if my_invoice {
-            info!("{}: Invoice setup complete for game {:?}", player.player_name, game_id);
-        }
-    }
-
-    // =========================================================================
-    // Step 2: Original game flow (commit + reveal)
+    // Invoice creation and payment are handled entirely by the frontend
+    // via direct Fiber RPC calls. The backend only manages game state.
     // =========================================================================
     let (role, action, salt, commitment) = {
         let mut games = player.games.write().unwrap();
@@ -1511,29 +1333,22 @@ async fn player_get_game_status(
     };
 
     // If waiting for opponent, check if opponent has joined
-    // When opponent joins, Player A creates their invoice (using B's payment_hash)
+    // When opponent joins, fetch their payment_hash and transition to WaitingForAction
+    // (Frontend will handle invoice creation via direct Fiber RPC)
     if current_phase == PlayerGamePhase::WaitingForOpponent {
         let url = format!("{}/game/{}/status", player.oracle_url, game_id);
         if let Ok(resp) = player.http_client.get(&url).send().await {
             if let Ok(status_data) = resp.json::<serde_json::Value>().await {
                 if status_data["has_opponent"].as_bool() == Some(true) {
-                    // Opponent has joined! Player A should now create their invoice
-                    let needs_invoice = {
+                    // Opponent has joined! Get their payment_hash
+                    let needs_hash = {
                         let games = player.games.read().unwrap();
-                        games.get(&game_id).map(|g| g.my_invoice.is_none()).unwrap_or(false)
+                        games.get(&game_id).map(|g| g.opponent_payment_hash.is_none()).unwrap_or(false)
                     };
 
-                    let mut invoice_created = !needs_invoice; // Already have invoice = success
+                    let mut hash_obtained = !needs_hash;
 
-                    if needs_invoice {
-                        // Get game info
-                        let amount = {
-                            let games = player.games.read().unwrap();
-                            let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
-                            game.amount_shannons
-                        };
-
-                        // Get opponent's (B's) payment_hash
+                    if needs_hash {
                         let get_hash_url = format!("{}/game/{}/payment-hash/B", player.oracle_url, game_id);
                         info!("{}: Trying to get B's payment_hash from {}", player.player_name, get_hash_url);
                         
@@ -1546,45 +1361,16 @@ async fn player_get_game_status(
                                             .map(|v| v.as_u64().unwrap_or(0) as u8)
                                             .collect();
                                         
-                                        if let Ok(hash_arr) = hash_bytes.as_slice().try_into() {
+                                        if let Ok(hash_arr) = <[u8; 32]>::try_from(hash_bytes.as_slice()) {
                                             let opponent_payment_hash = PaymentHash::from_bytes(hash_arr);
                                             
-                                            // Create MY invoice using opponent's payment_hash
-                                            match player.fiber_client
-                                                .create_hold_invoice(&opponent_payment_hash, amount, 3600)
-                                                .await
-                                            {
-                                                Ok(invoice) => {
-                                                    info!("{}: Created hold invoice after opponent joined for game {:?}", player.player_name, game_id);
-
-                                                    // Submit MY invoice to Oracle
-                                                    let submit_url = format!("{}/game/{}/invoice", player.oracle_url, game_id);
-                                                    let submit_body = serde_json::json!({
-                                                        "player": Player::A,
-                                                        "invoice_string": invoice.invoice_string,
-                                                    });
-                                                    
-                                                    let _ = player.http_client
-                                                        .post(&submit_url)
-                                                        .json(&submit_body)
-                                                        .send()
-                                                        .await;
-
-                                                    info!("{}: Submitted invoice to Oracle for game {:?}", player.player_name, game_id);
-
-                                                    // Store invoice info
-                                                    let mut games = player.games.write().unwrap();
-                                                    if let Some(game) = games.get_mut(&game_id) {
-                                                        game.opponent_payment_hash = Some(opponent_payment_hash);
-                                                        game.my_invoice = Some(invoice);
-                                                    }
-                                                    
-                                                    invoice_created = true;
-                                                }
-                                                Err(e) => {
-                                                    info!("{}: Failed to create invoice: {}", player.player_name, e);
-                                                }
+                                            let mut games = player.games.write().unwrap();
+                                            if let Some(game) = games.get_mut(&game_id) {
+                                                game.opponent_payment_hash = Some(opponent_payment_hash);
                                             }
+                                            
+                                            hash_obtained = true;
+                                            info!("{}: Got B's payment_hash for game {:?}", player.player_name, game_id);
                                         }
                                     }
                                 }
@@ -1594,8 +1380,8 @@ async fn player_get_game_status(
                         }
                     }
 
-                    // Only update phase if invoice was created successfully
-                    if invoice_created {
+                    // Transition to WaitingForAction — frontend will create invoice
+                    if hash_obtained {
                         let mut games = player.games.write().unwrap();
                         if let Some(game) = games.get_mut(&game_id) {
                             game.phase = PlayerGamePhase::WaitingForAction;
@@ -1691,6 +1477,15 @@ async fn player_get_game_status(
         }
     };
 
+    // Provide hex-encoded hashes/preimage for frontend Fiber RPC calls
+    let opponent_payment_hash_hex = game.opponent_payment_hash.as_ref().map(|h| {
+        format!("0x{}", hex::encode(h.as_bytes()))
+    });
+    let opponent_preimage_hex = game.opponent_preimage.as_ref().map(|p| {
+        format!("0x{}", hex::encode(p.as_bytes()))
+    });
+    let my_payment_hash_hex = Some(format!("0x{}", hex::encode(game.payment_hash.as_bytes())));
+
     Ok(Json(PlayerGameStatusResponse {
         role: game.role,
         phase: game.phase,
@@ -1698,6 +1493,9 @@ async fn player_get_game_status(
         my_action: game.action.clone(),
         opponent_action: game.opponent_action.clone(),
         can_settle,
+        opponent_payment_hash: opponent_payment_hash_hex,
+        opponent_preimage: opponent_preimage_hex,
+        my_payment_hash: my_payment_hash_hex,
     }))
 }
 
@@ -1706,7 +1504,7 @@ async fn player_settle(
     Path(game_id): Path<GameId>,
 ) -> Result<Json<SettleResponse>, AppError> {
     // Get game state
-    let (result, amount_won, my_invoice, opponent_invoice, opponent_preimage, role) = {
+    let (result, amount_won, role) = {
         let games = player.games.read().unwrap();
         let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
 
@@ -1722,87 +1520,22 @@ async fn player_settle(
             (GameResult::Draw, _) => 0,
         };
 
-        (
-            result, 
-            amount_won, 
-            game.my_invoice.clone(),
-            game.opponent_invoice.clone(),
-            game.opponent_preimage.clone(),
-            game.role,
-        )
+        (result, amount_won, game.role)
     };
 
     // Settlement logic (Hold Invoice security model):
     //
-    // - my_invoice: I created this (with OPPONENT's payment_hash), opponent paid this
-    //   I can settle/cancel this invoice since it's on MY node
-    //   To settle: I need OPPONENT's preimage (revealed by Oracle if I won)
-    //   Settle: I claim the money opponent paid me
-    //   Cancel: Opponent gets refund
+    // All Fiber RPC calls (settle_invoice, cancel_invoice) are now performed
+    // by the frontend directly on the player's own Fiber node.
     //
-    // - opponent_invoice: Opponent created this (with MY payment_hash), I paid this
-    //   OPPONENT controls this invoice on their node
-    //   When opponent settles: they claim my payment
-    //   When opponent cancels: I get refund
+    // The backend only tracks the game phase transition.
     //
-    // Winner: settle my_invoice using OPPONENT's preimage (claim the money opponent paid to me)
-    // Loser: cancel my_invoice (refund the money opponent paid to me)
-    // Draw: both sides cancel their my_invoice to refund each other
+    // Winner frontend: calls settle_invoice with opponent's preimage (from /status response)
+    // Loser frontend: calls cancel_invoice to refund opponent
+    // Draw frontend: both call cancel_invoice
 
-    if amount_won > 0 {
-        // Winner: settle MY invoice (the one I created, that opponent paid)
-        // my_invoice uses OPPONENT's payment_hash
-        // To settle, we need OPPONENT's preimage (revealed by Oracle)
-        
-        if let Some(invoice) = &my_invoice {
-            let opp_preimage = opponent_preimage.ok_or(AppError::from(
-                "Opponent's preimage not available - poll /status to get it from Oracle"
-            ))?;
-            
-            player.fiber_client
-                .settle_invoice(&invoice.payment_hash, &opp_preimage)
-                .await
-                .map_err(|e| AppError(format!("Failed to settle invoice: {}", e)))?;
-            
-            info!("{}: Winner ({:?}) settled my_invoice for game {:?}, claimed {} shannons", 
-                  player.player_name, role, game_id, amount_won);
-        }
-        
-        // Note: The loser (opponent) should cancel my_invoice to refund me,
-        // but in this demo we don't explicitly handle cross-player coordination.
-        // The opponent's settle call will handle their side.
-        
-    } else if amount_won < 0 {
-        // Loser: cancel my_invoice to refund the opponent's payment
-        // (Opponent will settle their opponent_invoice to claim their winnings)
-        if let Some(invoice) = &my_invoice {
-            player.fiber_client
-                .cancel_invoice(&invoice.payment_hash)
-                .await
-                .map_err(|e| AppError(format!("Failed to cancel invoice: {}", e)))?;
-            info!("{}: Loser cancelled my_invoice for game {:?} (refunding opponent)", 
-                  player.player_name, game_id);
-        }
-        
-    } else {
-        // Draw: cancel both invoices to refund payments
-        if let Some(invoice) = &my_invoice {
-            player.fiber_client
-                .cancel_invoice(&invoice.payment_hash)
-                .await
-                .map_err(|e| AppError(format!("Failed to cancel my_invoice: {}", e)))?;
-            info!("{}: Cancelled my_invoice for game {:?} (draw)", player.player_name, game_id);
-        }
-        if let Some(invoice) = &opponent_invoice {
-            player.fiber_client
-                .cancel_invoice(&invoice.payment_hash)
-                .await
-                .map_err(|e| AppError(format!("Failed to cancel opponent_invoice: {}", e)))?;
-            info!("{}: Cancelled opponent_invoice for game {:?} (draw)", player.player_name, game_id);
-        }
-    }
-
-    info!("{}: Settled game {:?}: amount_won = {}", player.player_name, game_id, amount_won);
+    info!("{}: Player {:?} marking game {:?} as settled: amount_won = {}", 
+          player.player_name, role, game_id, amount_won);
 
     {
         let mut games = player.games.write().unwrap();
@@ -1811,6 +1544,46 @@ async fn player_settle(
     }
 
     Ok(Json(SettleResponse { result, amount_won }))
+}
+
+// ============================================================================
+// Frontend-to-Backend notification handlers
+// ============================================================================
+
+/// Frontend reports that it created an invoice on its Fiber node and submitted to Oracle
+async fn player_invoice_created(
+    State(player): State<Arc<PlayerState>>,
+    Path(game_id): Path<GameId>,
+    Json(req): Json<InvoiceCreatedRequest>,
+) -> Result<Json<InvoiceCreatedResponse>, AppError> {
+    let mut games = player.games.write().unwrap();
+    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+
+    game.my_invoice_string = Some(req.invoice_string);
+
+    info!("{}: Frontend reported invoice created for game {:?}", player.player_name, game_id);
+
+    Ok(Json(InvoiceCreatedResponse {
+        status: "ok".to_string(),
+    }))
+}
+
+/// Frontend reports that it paid the opponent's invoice via Fiber RPC
+async fn player_payment_done(
+    State(player): State<Arc<PlayerState>>,
+    Path(game_id): Path<GameId>,
+    Json(_req): Json<PaymentDoneRequest>,
+) -> Result<Json<PaymentDoneResponse>, AppError> {
+    let mut games = player.games.write().unwrap();
+    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+
+    game.paid_opponent = true;
+
+    info!("{}: Frontend reported payment done for game {:?}", player.player_name, game_id);
+
+    Ok(Json(PaymentDoneResponse {
+        status: "ok".to_string(),
+    }))
 }
 
 // ============================================================================
@@ -1871,6 +1644,12 @@ fn create_player_router(get_player: fn(&AppState) -> Arc<PlayerState>) -> Router
         .route("/game/:game_id/settle", post(move |State(state): State<Arc<AppState>>, path: Path<GameId>| async move {
             player_settle(State(get_player(&state)), path).await
         }))
+        .route("/game/:game_id/invoice-created", post(move |State(state): State<Arc<AppState>>, path: Path<GameId>, body: Json<InvoiceCreatedRequest>| async move {
+            player_invoice_created(State(get_player(&state)), path, body).await
+        }))
+        .route("/game/:game_id/payment-done", post(move |State(state): State<Arc<AppState>>, path: Path<GameId>, body: Json<PaymentDoneRequest>| async move {
+            player_payment_done(State(get_player(&state)), path, body).await
+        }))
 }
 
 fn get_player_a(state: &AppState) -> Arc<PlayerState> {
@@ -1914,46 +1693,38 @@ async fn main() {
     let player_a_id = Uuid::new_v4();
     let player_b_id = Uuid::new_v4();
 
-    // Check for real Fiber clients
-    let fiber_client_a: Arc<dyn FiberClient> = if let Ok(url) = std::env::var("FIBER_PLAYER_A_RPC_URL") {
-        info!("Player A using Fiber RPC: {}", url);
-        Arc::new(RpcFiberClient::new(url))
-    } else {
-        info!("Player A using MockFiberClient (set FIBER_PLAYER_A_RPC_URL to enable real Fiber integration)");
-        Arc::new(MockFiberClient::new(100_000))
-    };
+    // Fiber RPC URLs are passed to frontend for direct browser-to-node calls
+    let fiber_rpc_url_a = std::env::var("FIBER_PLAYER_A_RPC_URL").ok();
+    let fiber_rpc_url_b = std::env::var("FIBER_PLAYER_B_RPC_URL").ok();
 
-    let fiber_client_b: Arc<dyn FiberClient> = if let Ok(url) = std::env::var("FIBER_PLAYER_B_RPC_URL") {
-        info!("Player B using Fiber RPC: {}", url);
-        Arc::new(RpcFiberClient::new(url))
+    if let Some(ref url) = fiber_rpc_url_a {
+        info!("Player A Fiber RPC URL: {} (frontend will call directly)", url);
     } else {
-        info!("Player B using MockFiberClient (set FIBER_PLAYER_B_RPC_URL to enable real Fiber integration)");
-        Arc::new(MockFiberClient::new(100_000))
-    };
+        info!("Player A: No FIBER_PLAYER_A_RPC_URL set (mock mode — no real Fiber payments)");
+    }
+
+    if let Some(ref url) = fiber_rpc_url_b {
+        info!("Player B Fiber RPC URL: {} (frontend will call directly)", url);
+    } else {
+        info!("Player B: No FIBER_PLAYER_B_RPC_URL set (mock mode — no real Fiber payments)");
+    }
 
     let state = Arc::new(AppState {
         oracle: OracleState::new(),
-        player_a: Arc::new(PlayerState::new(player_a_id, "Player A".to_string(), oracle_url.clone(), fiber_client_a)),
-        player_b: Arc::new(PlayerState::new(player_b_id, "Player B".to_string(), oracle_url, fiber_client_b)),
+        player_a: Arc::new(PlayerState::new(player_a_id, "Player A".to_string(), oracle_url.clone(), fiber_rpc_url_a)),
+        player_b: Arc::new(PlayerState::new(player_b_id, "Player B".to_string(), oracle_url, fiber_rpc_url_b)),
     });
 
     info!("Oracle public key: {}", hex::encode(state.oracle.public_key.serialize()));
-    
-    // Asynchronously log balances
-    match state.player_a.fiber_client.get_balance().await {
-        Ok(bal) => info!("Player A ID: {} (balance: {} shannons)", player_a_id, bal),
-        Err(e) => info!("Player A balance error: {}", e),
-    }
-    match state.player_b.fiber_client.get_balance().await {
-        Ok(bal) => info!("Player B ID: {} (balance: {} shannons)", player_b_id, bal),
-        Err(e) => info!("Player B balance error: {}", e),
-    }
+    info!("Player A ID: {}", player_a_id);
+    info!("Player B ID: {}", player_b_id);
 
     let app = create_app(state);
 
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
     info!("Fiber Game Demo listening on http://0.0.0.0:{}", port);
     info!("  UI: http://localhost:{}/", port);
+    info!("  All Fiber RPC calls are made by the frontend directly");
 
     axum::serve(listener, app).await.unwrap();
 }
