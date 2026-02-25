@@ -230,70 +230,11 @@ This prevents a malicious opponent from creating an invoice with a different `pa
 ## Run Tests
 
 ```bash
-# Run all tests in the workspace
-cargo test
-
-# Run specific E2E test (requires building crates first)
-cargo test --test e2e_game_flow -- --nocapture
-```
-
-## API Endpoints
-
-### Oracle (Combined Demo: `/api/oracle/*`)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/oracle/pubkey` | Get Oracle public key |
-| GET | `/api/oracle/games/available` | List available games |
-| POST | `/api/oracle/game/create` | Create a new game |
-| POST | `/api/oracle/game/{id}/join` | Join an existing game |
-| POST | `/api/oracle/game/{id}/payment-hash` | Submit payment hash + preimage |
-| GET | `/api/oracle/game/{id}/payment-hash/{player}` | Get opponent's payment hash |
-| POST | `/api/oracle/game/{id}/invoice` | Submit invoice string |
-| GET | `/api/oracle/game/{id}/invoice/{player}` | Get opponent's invoice string |
-| POST | `/api/oracle/game/{id}/encrypted-preimage` | Submit encrypted preimage |
-| GET | `/api/oracle/game/{id}/encrypted-preimage/{player}` | Get opponent's encrypted preimage |
-| POST | `/api/oracle/game/{id}/commit` | Submit move commitment |
-| POST | `/api/oracle/game/{id}/reveal` | Reveal move |
-| GET | `/api/oracle/game/{id}/status` | Get game status |
-| GET | `/api/oracle/game/{id}/result` | Get game result (includes preimage for winner) |
-
-### Player (Combined Demo: `/api/player-a/*` or `/api/player-b/*`)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/player-{a,b}/player` | Get player info |
-| GET | `/api/player-{a,b}/games/available` | List available games |
-| GET | `/api/player-{a,b}/games/mine` | List my games |
-| POST | `/api/player-{a,b}/game/create` | Create a game |
-| POST | `/api/player-{a,b}/game/join` | Join a game |
-| POST | `/api/player-{a,b}/game/{id}/play` | Submit move |
-| GET | `/api/player-{a,b}/game/{id}/status` | Get game status |
-| POST | `/api/player-{a,b}/game/{id}/settle` | Settle after game ends |
-| POST | `/api/player-{a,b}/game/{id}/invoice-created` | Notify backend of invoice creation |
-| POST | `/api/player-{a,b}/game/{id}/payment-done` | Notify backend of payment completion |
-
-## Dependencies
-
-This crate depends on `fiber-core` for:
-- `Preimage` / `PaymentHash` types
-
-Note: The backend does **not** use `FiberClient`, `MockFiberClient`, or `RpcFiberClient` — all Fiber interactions are handled by the frontend.
-
-## Testing
-
-The test suite covers:
-- Cryptographic primitives (commitments, hashing)
-- Game logic (win/lose/draw conditions)
-- Full game flows (both players complete a game)
-- Edge cases (invalid moves, timeouts)
-
-```bash
 # Run all tests
 cargo test
 
-# Run only core library tests
-cargo test -p fiber-game-core
+# Run E2E test
+cargo test --test e2e_game_flow -- --nocapture
 ```
 
 ## License

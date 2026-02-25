@@ -30,7 +30,6 @@ Both demos follow a **decentralized frontend-driven** architecture:
 
 | Project | Description |
 |---------|-------------|
-| [fiber-core](./fiber-core/) | Shared library with crypto primitives and FiberClient trait |
 | [fiber-game](./fiber-game/) | Two-player game protocol (Rock-Paper-Scissors, Guess Number) |
 | [fiber-escrow](./fiber-escrow/) | Escrow trading system with hold invoice-based payment |
 
