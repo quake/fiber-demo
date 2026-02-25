@@ -156,7 +156,7 @@ cargo run
 
 ### 2. Separate Services (Standalone)
 
-If you need to run services independently across different machines or ports:
+For running services independently across different machines or ports (e.g., Oracle on a central server, players on separate machines):
 
 ```bash
 # Terminal 1: Oracle service (http://localhost:3000)

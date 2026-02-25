@@ -1,6 +1,8 @@
 //! Fiber Game Oracle Service
 //!
 //! HTTP service that manages game sessions, collects reveals, and signs results.
+//! The Oracle stores payment hashes, preimages, and invoice strings for
+//! frontend-driven Fiber payment flows. It makes zero Fiber RPC calls.
 
 use axum::{
     extract::{Path, State},
@@ -10,7 +12,7 @@ use axum::{
     Json, Router,
 };
 use fiber_game_core::{
-    crypto::{Commitment, EncryptedPreimage, PaymentHash},
+    crypto::{Commitment, EncryptedPreimage, PaymentHash, Preimage, Salt},
     games::{GameAction, GameJudge, GameType, OracleSecret},
     protocol::{GameId, GameResult, Player},
 };
@@ -65,8 +67,18 @@ struct GameState {
     oracle_commitment: Option<[u8; 32]>,
     player_a_id: Uuid,
     player_b_id: Option<Uuid>,
-    invoice_a: Option<PaymentHash>,
-    invoice_b: Option<PaymentHash>,
+    /// Player A's payment_hash (opponent uses this to create their invoice)
+    payment_hash_a: Option<PaymentHash>,
+    /// Player B's payment_hash (opponent uses this to create their invoice)
+    payment_hash_b: Option<PaymentHash>,
+    /// Player A's preimage (for settlement - revealed to winner)
+    preimage_a: Option<Preimage>,
+    /// Player B's preimage (for settlement - revealed to winner)
+    preimage_b: Option<Preimage>,
+    /// Player A's invoice string (created by A's frontend, for B to pay)
+    invoice_a: Option<String>,
+    /// Player B's invoice string (created by B's frontend, for A to pay)
+    invoice_b: Option<String>,
     encrypted_preimage_a: Option<EncryptedPreimage>,
     encrypted_preimage_b: Option<EncryptedPreimage>,
     commit_a: Option<Commitment>,
@@ -82,7 +94,7 @@ struct GameState {
 #[allow(dead_code)]
 struct RevealData {
     action: GameAction,
-    salt: fiber_game_core::crypto::Salt,
+    salt: Salt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,15 +148,31 @@ struct JoinGameRequest {
 #[derive(Serialize)]
 struct JoinGameResponse {
     status: String,
+    game_type: GameType,
     oracle_pubkey: String,
     commitment_point: String,
     oracle_commitment: Option<String>,
+    amount_shannons: u64,
+}
+
+#[derive(Deserialize)]
+struct SubmitPaymentHashRequest {
+    player: Player,
+    payment_hash: PaymentHash,
+    /// The preimage that hashes to payment_hash (stored for settlement)
+    preimage: Preimage,
+}
+
+#[derive(Serialize)]
+struct PaymentHashResponse {
+    payment_hash: PaymentHash,
 }
 
 #[derive(Deserialize)]
 struct SubmitInvoiceRequest {
     player: Player,
-    payment_hash: PaymentHash,
+    /// The actual BOLT11 invoice string
+    invoice_string: String,
 }
 
 #[derive(Serialize)]
@@ -154,7 +182,8 @@ struct StatusResponse {
 
 #[derive(Serialize)]
 struct InvoiceResponse {
-    payment_hash: PaymentHash,
+    /// The actual BOLT11 invoice string
+    invoice_string: String,
 }
 
 #[derive(Deserialize)]
@@ -178,7 +207,7 @@ struct SubmitCommitRequest {
 struct SubmitRevealRequest {
     player: Player,
     action: GameAction,
-    salt: fiber_game_core::crypto::Salt,
+    salt: Salt,
     commit_a: Commitment,
     commit_b: Commitment,
 }
@@ -189,6 +218,10 @@ struct GameResultResponse {
     result: Option<GameResult>,
     signature: Option<String>,
     game_data: Option<GameDataResponse>,
+    /// Opponent's preimage for Player A (only set if A won)
+    preimage_for_a: Option<Preimage>,
+    /// Opponent's preimage for Player B (only set if B won)
+    preimage_for_b: Option<Preimage>,
 }
 
 #[derive(Serialize)]
@@ -289,6 +322,10 @@ async fn create_game(
         oracle_commitment,
         player_a_id: req.player_a_id,
         player_b_id: None,
+        payment_hash_a: None,
+        payment_hash_b: None,
+        preimage_a: None,
+        preimage_b: None,
         invoice_a: None,
         invoice_b: None,
         encrypted_preimage_a: None,
@@ -333,10 +370,54 @@ async fn join_game(
 
     Ok(Json(JoinGameResponse {
         status: "joined".to_string(),
+        game_type: game.game_type,
         oracle_pubkey: hex::encode(state.public_key.serialize()),
         commitment_point: hex::encode(game.commitment_point.serialize()),
         oracle_commitment: game.oracle_commitment.map(hex::encode),
+        amount_shannons: game.amount_shannons,
     }))
+}
+
+async fn submit_payment_hash(
+    State(state): State<Arc<OracleState>>,
+    Path(game_id): Path<GameId>,
+    Json(req): Json<SubmitPaymentHashRequest>,
+) -> Result<Json<StatusResponse>, AppError> {
+    let mut games = state.games.write().unwrap();
+    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+
+    match req.player {
+        Player::A => {
+            game.payment_hash_a = Some(req.payment_hash);
+            game.preimage_a = Some(req.preimage);
+        }
+        Player::B => {
+            game.payment_hash_b = Some(req.payment_hash);
+            game.preimage_b = Some(req.preimage);
+        }
+    }
+
+    info!("Received payment_hash from {:?} for game {:?}", req.player, game_id);
+
+    Ok(Json(StatusResponse {
+        status: "payment_hash_received".to_string(),
+    }))
+}
+
+async fn get_payment_hash(
+    State(state): State<Arc<OracleState>>,
+    Path((game_id, player)): Path<(GameId, String)>,
+) -> Result<Json<PaymentHashResponse>, AppError> {
+    let games = state.games.read().unwrap();
+    let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+
+    let payment_hash = match player.as_str() {
+        "A" | "a" => game.payment_hash_a.ok_or(AppError::from("Payment hash A not submitted"))?,
+        "B" | "b" => game.payment_hash_b.ok_or(AppError::from("Payment hash B not submitted"))?,
+        _ => return Err(AppError::from("Invalid player")),
+    };
+
+    Ok(Json(PaymentHashResponse { payment_hash }))
 }
 
 async fn submit_invoice(
@@ -348,8 +429,8 @@ async fn submit_invoice(
     let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
 
     match req.player {
-        Player::A => game.invoice_a = Some(req.payment_hash),
-        Player::B => game.invoice_b = Some(req.payment_hash),
+        Player::A => game.invoice_a = Some(req.invoice_string),
+        Player::B => game.invoice_b = Some(req.invoice_string),
     }
 
     Ok(Json(StatusResponse {
@@ -364,13 +445,15 @@ async fn get_invoice(
     let games = state.games.read().unwrap();
     let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
 
-    let payment_hash = match player.as_str() {
-        "A" | "a" => game.invoice_a.ok_or(AppError::from("Invoice A not submitted"))?,
-        "B" | "b" => game.invoice_b.ok_or(AppError::from("Invoice B not submitted"))?,
+    let invoice_string = match player.as_str() {
+        "A" | "a" => game.invoice_a.as_ref().ok_or(AppError::from("Invoice A not submitted"))?,
+        "B" | "b" => game.invoice_b.as_ref().ok_or(AppError::from("Invoice B not submitted"))?,
         _ => return Err(AppError::from("Invalid player")),
     };
 
-    Ok(Json(InvoiceResponse { payment_hash }))
+    Ok(Json(InvoiceResponse {
+        invoice_string: invoice_string.clone(),
+    }))
 }
 
 async fn submit_encrypted_preimage(
@@ -471,9 +554,9 @@ async fn submit_reveal(
     }
 
     // Check if both reveals are in, then judge
-    if game.reveal_a.is_some() && game.reveal_b.is_some() {
-        let action_a = &game.reveal_a.as_ref().unwrap().action;
-        let action_b = &game.reveal_b.as_ref().unwrap().action;
+    if let (Some(reveal_a), Some(reveal_b)) = (&game.reveal_a, &game.reveal_b) {
+        let action_a = &reveal_a.action;
+        let action_b = &reveal_b.action;
 
         // Judge the game
         let result = match game.game_type {
@@ -543,6 +626,8 @@ async fn get_result(
             result: None,
             signature: None,
             game_data: None,
+            preimage_for_a: None,
+            preimage_for_b: None,
         }));
     }
 
@@ -559,11 +644,30 @@ async fn get_result(
         None
     };
 
+    // Determine which player gets the opponent's preimage based on game result
+    // Winner gets opponent's preimage to settle their own invoice (my_invoice)
+    let (preimage_for_a, preimage_for_b) = match game.result {
+        Some(GameResult::AWins) => {
+            // A wins, so A gets B's preimage to settle A's invoice (paid by B)
+            (game.preimage_b.clone(), None)
+        }
+        Some(GameResult::BWins) => {
+            // B wins, so B gets A's preimage to settle B's invoice (paid by A)
+            (None, game.preimage_a.clone())
+        }
+        Some(GameResult::Draw) | None => {
+            // Draw or no result yet - no preimages revealed
+            (None, None)
+        }
+    };
+
     Ok(Json(GameResultResponse {
         status: "completed".to_string(),
         result: game.result,
         signature: game.signature.map(hex::encode),
         game_data,
+        preimage_for_a,
+        preimage_for_b,
     }))
 }
 
@@ -573,6 +677,8 @@ fn create_router(state: Arc<OracleState>) -> Router {
         .route("/games/available", get(get_available_games))
         .route("/game/create", post(create_game))
         .route("/game/:game_id/join", post(join_game))
+        .route("/game/:game_id/payment-hash", post(submit_payment_hash))
+        .route("/game/:game_id/payment-hash/:player", get(get_payment_hash))
         .route("/game/:game_id/invoice", post(submit_invoice))
         .route("/game/:game_id/invoice/:player", get(get_invoice))
         .route(
@@ -615,6 +721,7 @@ async fn main() {
 
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
     info!("Oracle service listening on http://0.0.0.0:{}", port);
+    info!("  All Fiber RPC calls are made by player frontends directly");
 
     axum::serve(listener, app).await.unwrap();
 }

@@ -246,7 +246,7 @@ curl -X POST http://localhost:3000/api/orders \
 
 Response includes:
 - `order_id`
-- `payment_hash` (0x-prefixed, SHA256 of preimage)
+- `payment_hash` (0x-prefixed, Blake2b-256 of preimage)
 
 ### Submit Invoice (seller)
 

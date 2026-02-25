@@ -209,7 +209,7 @@ When Fiber RPC URLs are set, the backend passes them to the frontend via `/api/c
 }
 ```
 
-The escrow computes `payment_hash = SHA256(preimage)` and stores the preimage. The `payment_hash` is returned in the response for the seller to create a hold invoice.
+The escrow computes `payment_hash = Blake2b-256(preimage)` and stores the preimage. The `payment_hash` is returned in the response for the seller to create a hold invoice.
 
 ### Submit Invoice Request
 

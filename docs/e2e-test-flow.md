@@ -67,6 +67,8 @@ The RPC URLs are passed to the frontend — the backend makes no Fiber calls.
 
 ### Option B: Standalone (Three Terminals)
 
+Both standalone services use the same frontend-driven architecture as the combined demo — backends manage state only, frontends call Fiber nodes directly.
+
 #### Terminal 1 - Oracle (port 3000)
 
 ```bash

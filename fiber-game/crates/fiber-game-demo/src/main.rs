@@ -570,9 +570,9 @@ async fn oracle_submit_reveal(
     }
 
     // Check if both reveals are in, then judge
-    if game.reveal_a.is_some() && game.reveal_b.is_some() {
-        let action_a = &game.reveal_a.as_ref().unwrap().action;
-        let action_b = &game.reveal_b.as_ref().unwrap().action;
+    if let (Some(reveal_a), Some(reveal_b)) = (&game.reveal_a, &game.reveal_b) {
+        let action_a = &reveal_a.action;
+        let action_b = &reveal_b.action;
 
         let result = match game.game_type {
             GameType::RockPaperScissors => {
@@ -1247,7 +1247,7 @@ async fn player_play(
         game.action = Some(req.action.clone());
 
         let commitment = Commitment::new(&req.action.to_bytes(), &game.salt);
-        game.my_commitment = Some(commitment.clone());
+        game.my_commitment = Some(commitment);
 
         (game.role, req.action.clone(), game.salt.clone(), commitment)
     };
@@ -1278,8 +1278,8 @@ async fn player_play(
     // Submit reveal to Oracle
     let reveal_url = format!("{}/game/{}/reveal", player.oracle_url, game_id);
     let (commit_a, commit_b) = match role {
-        Player::A => (commitment.clone(), commitment.clone()),
-        Player::B => (commitment.clone(), commitment.clone()),
+        Player::A => (commitment, commitment),
+        Player::B => (commitment, commitment),
     };
 
     let reveal_body = serde_json::json!({

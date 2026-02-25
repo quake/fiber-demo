@@ -42,7 +42,7 @@ impl OracleSecret {
     pub fn commitment(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update([self.secret_number]);
-        hasher.update(&self.nonce);
+        hasher.update(self.nonce);
         hasher.finalize().into()
     }
 
@@ -58,11 +58,7 @@ pub struct GuessNumberGame;
 impl GuessNumberGame {
     /// Calculate distance from guess to secret number
     fn distance(guess: u8, secret: u8) -> u8 {
-        if guess > secret {
-            guess - secret
-        } else {
-            secret - guess
-        }
+        guess.abs_diff(secret)
     }
 }
 

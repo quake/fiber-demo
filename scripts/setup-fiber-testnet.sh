@@ -12,7 +12,7 @@
 set -e
 
 # Configuration
-FNN_VERSION="v0.7.0"
+FNN_VERSION="v0.7.1-rc1"
 CKB_CLI_VERSION="v2.0.0"
 CHANNEL_FUNDING_AMOUNT="0xba43b7400"  # 500 CKB = 50000000000 shannon
 CKB_RPC_URL="https://testnet.ckb.dev"
@@ -415,6 +415,7 @@ fiber:
 
 rpc:
   listening_addr: "127.0.0.1:${rpc_port}"
+  cors_enabled: true
 
 ckb:
   rpc_url: "https://testnet.ckbapp.dev/"

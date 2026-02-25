@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fiber Game Demo</title>
+    <title>Fiber Game Player</title>
     <style>
         * {
             box-sizing: border-box;
@@ -43,6 +43,14 @@
         }
         .balance {
             font-size: 1.5em;
+            color: #00ff88;
+        }
+        .fiber-status {
+            font-size: 0.85em;
+            color: #888;
+            margin-top: 5px;
+        }
+        .fiber-status.connected {
             color: #00ff88;
         }
         .section {
@@ -200,13 +208,6 @@
         .modal h2 {
             margin-bottom: 20px;
         }
-        .close-btn {
-            position: absolute;
-            top: 10px;
-            right: 15px;
-            font-size: 1.5em;
-            cursor: pointer;
-        }
         .guess-input {
             text-align: center;
             margin: 20px 0;
@@ -224,13 +225,15 @@
 <body>
     <div class="container">
         <header>
-            <h1>Fiber Game Demo</h1>
-            <p>Decentralized two-player games on Fiber Network</p>
+            <h1>Fiber Game Player</h1>
+            <p>Standalone player for Fiber Network games</p>
         </header>
 
         <div class="player-info">
             <div>
-                <strong>Player ID:</strong> <span id="playerId">Loading...</span>
+                <strong>Player:</strong> <span id="playerName">Loading...</span>
+                <span style="margin-left: 15px; color: #888;">ID: <span id="playerId">...</span></span>
+                <div id="fiberStatus" class="fiber-status">Fiber: checking...</div>
             </div>
             <div class="balance">
                 <span id="balance">0</span> shannons
@@ -275,13 +278,153 @@
     <script>
         const API_BASE = '';
 
-        // Fetch player info
+        // ====================================================================
+        // Fiber RPC helpers — all Fiber node calls are made from the browser
+        // ====================================================================
+
+        let fiberRpcUrl = null;
+
+        // Track which games already had invoices created (avoid duplicate calls)
+        const invoiceCreatedFor = new Set();
+        // Track which games already had payments sent
+        const paymentSentFor = new Set();
+
+        /**
+         * Generic JSON-RPC call to a Fiber node.
+         * Fiber RPC expects params wrapped in an array: [{ ... }]
+         */
+        async function fiberRpc(rpcUrl, method, params) {
+            const body = {
+                jsonrpc: '2.0',
+                id: 1,
+                method,
+                params: [params],
+            };
+            console.log(`[FiberRPC] ${method} ->`, JSON.stringify(body));
+            const resp = await fetch(rpcUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            console.log(`[FiberRPC] ${method} <-`, JSON.stringify(data));
+            if (data.error) {
+                throw new Error(data.error.message || JSON.stringify(data.error));
+            }
+            return data.result;
+        }
+
+        /**
+         * Create a hold invoice (new_invoice) on the player's Fiber node.
+         * paymentHash must be 0x-prefixed hex (32 bytes).
+         */
+        async function fiberNewInvoice(rpcUrl, paymentHash, amountShannons, description) {
+            const FINAL_EXPIRY_DELTA_MS = 9_600_000; // 160 minutes (Fiber minimum)
+            const EXPIRY_SECS = 3600;
+            const result = await fiberRpc(rpcUrl, 'new_invoice', {
+                amount: '0x' + amountShannons.toString(16),
+                currency: 'Fibt',
+                payment_hash: paymentHash,
+                expiry: '0x' + EXPIRY_SECS.toString(16),
+                final_expiry_delta: '0x' + FINAL_EXPIRY_DELTA_MS.toString(16),
+                description: description || 'Fiber Game Payment',
+            });
+            return result.invoice_address; // the BOLT11-like invoice string
+        }
+
+        /**
+         * Pay an invoice via send_payment.
+         */
+        async function fiberSendPayment(rpcUrl, invoiceString) {
+            const result = await fiberRpc(rpcUrl, 'send_payment', {
+                invoice: invoiceString,
+            });
+            const status = result.status || 'unknown';
+            if (['success', 'inflight', 'created'].includes(status)) {
+                return result;
+            }
+            throw new Error(`Payment failed: ${result.failed_error || status}`);
+        }
+
+        /**
+         * Settle a hold invoice with preimage (claim held funds).
+         * Both paymentHash and preimage must be 0x-prefixed hex.
+         */
+        async function fiberSettleInvoice(rpcUrl, paymentHash, preimage) {
+            return await fiberRpc(rpcUrl, 'settle_invoice', {
+                payment_hash: paymentHash,
+                payment_preimage: preimage,
+            });
+        }
+
+        /**
+         * Cancel a hold invoice (refund held funds).
+         * paymentHash must be 0x-prefixed hex.
+         */
+        async function fiberCancelInvoice(rpcUrl, paymentHash) {
+            return await fiberRpc(rpcUrl, 'cancel_invoice', {
+                payment_hash: paymentHash,
+            });
+        }
+
+        /**
+         * Get total local balance across all channels (in shannons).
+         */
+        async function fiberGetBalance(rpcUrl) {
+            const result = await fiberRpc(rpcUrl, 'list_channels', {});
+            const channels = result.channels || [];
+            let total = 0;
+            for (const ch of channels) {
+                const hex = ch.local_balance || '0x0';
+                total += parseInt(hex, 16) || 0;
+            }
+            return total;
+        }
+
+        // ====================================================================
+        // Player info and Oracle URL
+        // ====================================================================
+
+        // The Oracle URL is derived from the player backend's ORACLE_URL env var.
+        // In standalone mode, the player backend proxies Oracle calls, so we
+        // use the Oracle API directly via the known Oracle URL.
+        // For invoice submission to Oracle, the standalone player stores the Oracle URL
+        // from the backend response (or we can derive it from env).
+        // Actually, in standalone mode the player backend already talks to Oracle,
+        // so the frontend only needs to submit invoices to the Oracle.
+        // We'll get the Oracle URL from the backend's environment.
+
+        let oracleUrl = null; // Will be discovered or configured
+
         async function fetchPlayerInfo() {
             try {
                 const resp = await fetch(`${API_BASE}/api/player`);
                 const data = await resp.json();
+                document.getElementById('playerName').textContent = data.player_name;
                 document.getElementById('playerId').textContent = data.player_id.substring(0, 8) + '...';
-                document.getElementById('balance').textContent = data.balance.toLocaleString();
+
+                // Store Fiber RPC URL
+                fiberRpcUrl = data.fiber_rpc_url || null;
+
+                // Update Fiber status indicator
+                const fiberStatusEl = document.getElementById('fiberStatus');
+                if (fiberRpcUrl) {
+                    try {
+                        const balance = await fiberGetBalance(fiberRpcUrl);
+                        document.getElementById('balance').textContent = balance.toLocaleString();
+                        fiberStatusEl.textContent = `Fiber: connected (${fiberRpcUrl})`;
+                        fiberStatusEl.className = 'fiber-status connected';
+                    } catch (e) {
+                        console.warn('Could not fetch Fiber balance:', e);
+                        document.getElementById('balance').textContent = '(offline)';
+                        fiberStatusEl.textContent = `Fiber: offline (${fiberRpcUrl})`;
+                        fiberStatusEl.className = 'fiber-status';
+                    }
+                } else {
+                    document.getElementById('balance').textContent = '(mock)';
+                    fiberStatusEl.textContent = 'Fiber: mock mode (set FIBER_RPC_URL)';
+                    fiberStatusEl.className = 'fiber-status';
+                }
             } catch (e) {
                 console.error('Error fetching player info:', e);
             }
@@ -293,7 +436,7 @@
                 const resp = await fetch(`${API_BASE}/api/games/available`);
                 const data = await resp.json();
                 const container = document.getElementById('availableGames');
-                
+
                 if (data.games.length === 0) {
                     container.innerHTML = '<div class="status">No games available. Create one!</div>';
                     return;
@@ -303,7 +446,7 @@
                     <div class="game-item">
                         <div class="game-info">
                             <span class="game-type">${formatGameType(g.game_type)}</span>
-                            <span class="amount">${g.amount_shannons} shannons</span>
+                            <span class="amount">${g.amount_shannons.toLocaleString()} shannons</span>
                         </div>
                         <button class="btn" onclick="joinGame('${g.game_id}')">Join</button>
                     </div>
@@ -319,7 +462,7 @@
                 const resp = await fetch(`${API_BASE}/api/games/mine`);
                 const data = await resp.json();
                 const container = document.getElementById('myGames');
-                
+
                 if (data.games.length === 0) {
                     container.innerHTML = '<div class="status">No active games.</div>';
                     return;
@@ -329,7 +472,7 @@
                     <div class="game-item">
                         <div class="game-info">
                             <span class="game-type">${formatGameType(g.game_type)}</span>
-                            <span class="amount">${g.amount_shannons} shannons</span>
+                            <span class="amount">${g.amount_shannons.toLocaleString()} shannons</span>
                             <span>Role: ${g.role}</span>
                             <span>Phase: ${formatPhase(g.phase)}</span>
                         </div>
@@ -404,30 +547,194 @@
             }
         }
 
-        // Open game modal
+        // ====================================================================
+        // Fiber invoice/payment flow (frontend-driven)
+        // ====================================================================
+
+        /**
+         * Handle Fiber invoice creation and payment for a game.
+         * Called when game status provides opponent_payment_hash.
+         *
+         * In standalone mode, the Oracle is a separate service.
+         * The player backend submits payment hashes to Oracle automatically.
+         * For invoice creation, the frontend creates an invoice on its Fiber
+         * node and needs to submit it to the Oracle.
+         *
+         * The player backend's ORACLE_URL is not directly exposed to the
+         * frontend, so we submit the invoice via the player backend which
+         * forwards it. But we can also directly call Oracle if we know its URL.
+         *
+         * For simplicity, the standalone player frontend:
+         * 1. Creates invoice on own Fiber node
+         * 2. Reports to player backend via /api/game/:id/invoice-created
+         *    (backend can forward to Oracle if needed)
+         * 3. Gets opponent's invoice from player backend or directly
+         * 4. Pays opponent's invoice via Fiber RPC
+         * 5. Reports to player backend via /api/game/:id/payment-done
+         *
+         * Note: In standalone mode, the player backend does NOT proxy
+         * Oracle invoice submission. We need to know the Oracle URL.
+         * For now, we use the ORACLE_URL that the backend was configured with.
+         */
+
+        /**
+         * Discover Oracle URL. In standalone mode, we try to infer it
+         * from the player backend's configuration. For now, we use a
+         * reasonable default.
+         */
+        function getOracleUrl() {
+            // The Oracle URL defaults to http://localhost:3000 in standalone mode
+            // Users can override by setting window.ORACLE_URL
+            return window.ORACLE_URL || 'http://localhost:3000';
+        }
+
+        async function handleFiberInvoiceSetup(gameId, status) {
+            if (!fiberRpcUrl) {
+                console.log('[FiberSetup] No Fiber RPC URL — running in mock mode');
+                return;
+            }
+
+            const opponentHash = status.opponent_payment_hash; // 0x-prefixed hex
+            if (!opponentHash) return;
+
+            const playerRole = status.role; // 'A' or 'B'
+            const key = `${gameId}`;
+
+            // Step 1-3: Create invoice if not done yet
+            if (!invoiceCreatedFor.has(key)) {
+                try {
+                    console.log(`[FiberSetup] Creating invoice for game ${gameId} with opponent hash ${opponentHash}`);
+                    const invoiceString = await fiberNewInvoice(fiberRpcUrl, opponentHash, status.amount_shannons || 1000, 'Fiber Game Payment');
+
+                    // Submit invoice to Oracle directly
+                    const oracleBase = getOracleUrl();
+                    await fetch(`${oracleBase}/game/${gameId}/invoice`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ player: playerRole, invoice_string: invoiceString }),
+                    });
+
+                    // Notify player backend
+                    await fetch(`${API_BASE}/api/game/${gameId}/invoice-created`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ invoice_string: invoiceString }),
+                    });
+
+                    invoiceCreatedFor.add(key);
+                    console.log(`[FiberSetup] Invoice created and submitted for game ${gameId}`);
+                } catch (e) {
+                    console.error('[FiberSetup] Error creating invoice:', e);
+                }
+            }
+
+            // Step 4-5: Pay opponent's invoice if not done yet
+            if (!paymentSentFor.has(key)) {
+                try {
+                    // Get opponent's invoice from Oracle
+                    const opponent = playerRole === 'A' ? 'B' : 'A';
+                    const oracleBase = getOracleUrl();
+                    const invoiceResp = await fetch(`${oracleBase}/game/${gameId}/invoice/${opponent}`);
+
+                    if (!invoiceResp.ok) {
+                        console.log('[FiberSetup] Opponent invoice not available yet');
+                        return;
+                    }
+
+                    const invoiceData = await invoiceResp.json();
+                    const oppInvoice = invoiceData.invoice_string;
+                    if (!oppInvoice) {
+                        console.log('[FiberSetup] Opponent invoice string empty');
+                        return;
+                    }
+
+                    console.log(`[FiberSetup] Paying opponent's invoice for game ${gameId}`);
+                    await fiberSendPayment(fiberRpcUrl, oppInvoice);
+
+                    // Notify player backend
+                    await fetch(`${API_BASE}/api/game/${gameId}/payment-done`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({}),
+                    });
+
+                    paymentSentFor.add(key);
+                    console.log(`[FiberSetup] Payment sent for game ${gameId}`);
+                } catch (e) {
+                    if (e.message && e.message.includes('already exists')) {
+                        paymentSentFor.add(key);
+                        await fetch(`${API_BASE}/api/game/${gameId}/payment-done`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({}),
+                        }).catch(() => {});
+                    } else {
+                        console.error('[FiberSetup] Error paying invoice:', e);
+                    }
+                }
+            }
+        }
+
+        /**
+         * Handle Fiber settlement for a game.
+         * Winner: settle_invoice with opponent's preimage (claim funds)
+         * Loser: cancel_invoice (refund opponent)
+         * Draw: cancel_invoice (refund)
+         */
+        async function handleFiberSettle(gameId, status) {
+            if (!fiberRpcUrl) return; // Mock mode
+
+            const isWinner = isPlayerWinner(status.result, status.role);
+            const isDraw = status.result === 'Draw';
+
+            if (isWinner && status.opponent_preimage && status.opponent_payment_hash) {
+                console.log(`[FiberSettle] Settling invoice for game ${gameId}`);
+                try {
+                    await fiberSettleInvoice(fiberRpcUrl, status.opponent_payment_hash, status.opponent_preimage);
+                    console.log(`[FiberSettle] Invoice settled for game ${gameId}`);
+                } catch (e) {
+                    console.warn('[FiberSettle] settle_invoice error (may already be settled):', e.message);
+                }
+            } else if (isDraw || isPlayerLoser(status.result, status.role)) {
+                if (status.opponent_payment_hash) {
+                    console.log(`[FiberSettle] Cancelling invoice for game ${gameId}`);
+                    try {
+                        await fiberCancelInvoice(fiberRpcUrl, status.opponent_payment_hash);
+                        console.log(`[FiberSettle] Invoice cancelled for game ${gameId}`);
+                    } catch (e) {
+                        console.warn('[FiberSettle] cancel_invoice error:', e.message);
+                    }
+                }
+            }
+        }
+
+        // ====================================================================
+        // Game modal and UI
+        // ====================================================================
+
         async function openGame(gameId, gameType, phase) {
             const modal = document.getElementById('gameModal');
             const title = document.getElementById('modalTitle');
             const content = document.getElementById('modalContent');
 
             title.textContent = formatGameType(gameType);
-            
-            // Start with loading state
             content.innerHTML = '<div class="status">Loading...</div>';
             modal.classList.remove('hidden');
 
-            // Fetch current game status
             try {
                 const resp = await fetch(`${API_BASE}/api/game/${gameId}/status`);
                 const status = await resp.json();
-                
-                // Store for polling
+
                 currentGameId = gameId;
                 currentGameType = gameType;
-                
+
+                // Trigger Fiber invoice setup if needed
+                if (status.opponent_payment_hash && status.phase === 'WaitingForAction') {
+                    handleFiberInvoiceSetup(gameId, status);
+                }
+
                 renderGameModal(gameId, gameType, status);
-                
-                // Start polling if game is in progress
+
                 if (status.phase !== 'Settled' && status.phase !== 'WaitingForAction') {
                     startGamePolling(gameId, gameType);
                 }
@@ -452,9 +759,14 @@
                 try {
                     const resp = await fetch(`${API_BASE}/api/game/${gameId}/status`);
                     const status = await resp.json();
+
+                    // Trigger Fiber invoice setup if opponent has joined
+                    if (status.opponent_payment_hash && status.phase === 'WaitingForAction') {
+                        handleFiberInvoiceSetup(gameId, status);
+                    }
+
                     renderGameModal(gameId, gameType, status);
-                    
-                    // Stop polling if game is settled
+
                     if (status.phase === 'Settled') {
                         stopGamePolling();
                     }
@@ -473,7 +785,7 @@
 
         function renderGameModal(gameId, gameType, status) {
             const content = document.getElementById('modalContent');
-            
+
             // If waiting for action, show game interface
             if (status.phase === 'WaitingForAction' || status.phase === 'ExchangingInvoices' || status.phase === 'WaitingForOpponent') {
                 if (status.phase === 'WaitingForOpponent') {
@@ -486,9 +798,9 @@
                 } else if (gameType === 'RockPaperScissors') {
                     content.innerHTML = `
                         <div class="rps-buttons">
-                            <div class="rps-btn" onclick="selectRps(this, 'Rock')">🪨</div>
-                            <div class="rps-btn" onclick="selectRps(this, 'Paper')">📄</div>
-                            <div class="rps-btn" onclick="selectRps(this, 'Scissors')">✂️</div>
+                            <div class="rps-btn" onclick="selectRps(this, 'Rock')">&#129704;</div>
+                            <div class="rps-btn" onclick="selectRps(this, 'Paper')">&#128196;</div>
+                            <div class="rps-btn" onclick="selectRps(this, 'Scissors')">&#9986;&#65039;</div>
                         </div>
                         <div style="text-align: center;">
                             <button class="btn" onclick="submitRps('${gameId}')">Submit</button>
@@ -509,34 +821,37 @@
                 }
                 return;
             }
-            
+
             // If result is available, show result
             if (status.result) {
                 const myAction = formatAction(status.my_action);
                 const oppAction = formatAction(status.opponent_action);
-                const resultText = getResultText(status.result);
-                const resultClass = getResultClass(status.result);
-                
-                let settleButton = '';
-                if (status.can_settle) {
-                    settleButton = `<button class="btn" onclick="settleGame('${gameId}')">Settle Now</button>`;
-                } else if (status.phase === 'Settled') {
-                    settleButton = '<p style="color: #00ff88;">Settlement Complete</p>';
+                const resultText = getResultText(status.result, status.role);
+                const resultClass = getResultClass(status.result, status.role);
+                const isLoser = isPlayerLoser(status.result, status.role);
+
+                let settleSection = '';
+                if (status.phase === 'Settled') {
+                    settleSection = '<p style="color: #00ff88;">Settlement Complete</p>';
+                } else if (status.can_settle) {
+                    settleSection = `<button class="btn" onclick="settleGame('${gameId}')">Settle Now</button>`;
+                } else if (isLoser) {
+                    settleSection = '<p style="color: #888;">Waiting for winner to settle...</p>';
                 }
-                
+
                 content.innerHTML = `
                     <div class="result ${resultClass}">
                         <h3>${resultText}</h3>
                         <p style="margin: 15px 0; color: #ccc;">
                             You: <strong>${myAction}</strong> vs Opponent: <strong>${oppAction}</strong>
                         </p>
-                        ${settleButton}
+                        ${settleSection}
                         <button class="btn btn-secondary" onclick="closeModal()">Close</button>
                     </div>
                 `;
                 return;
             }
-            
+
             // Otherwise show waiting state
             content.innerHTML = `
                 <div class="status">
@@ -556,27 +871,50 @@
             return JSON.stringify(action);
         }
 
-        function getResultText(result) {
-            if (result === 'AWins') return 'Player A Wins!';
-            if (result === 'BWins') return 'Player B Wins!';
+        function getResultText(result, role) {
+            const isRoleA = role === 'A';
+            if (result === 'AWins') return isRoleA ? 'You Win!' : 'You Lose!';
+            if (result === 'BWins') return isRoleA ? 'You Lose!' : 'You Win!';
             if (result === 'Draw') return "It's a Draw!";
             return result;
         }
 
-        function getResultClass(result) {
-            // We don't know our role here, so just use neutral styling
-            // In a full implementation, we'd pass the role
+        function getResultClass(result, role) {
             if (result === 'Draw') return 'draw';
+            if (isPlayerWinner(result, role)) return 'win';
+            if (isPlayerLoser(result, role)) return 'lose';
             return '';
+        }
+
+        function isPlayerWinner(result, role) {
+            const isRoleA = role === 'A';
+            if (result === 'AWins') return isRoleA;
+            if (result === 'BWins') return !isRoleA;
+            return false;
+        }
+
+        function isPlayerLoser(result, role) {
+            const isRoleA = role === 'A';
+            if (result === 'AWins') return !isRoleA;
+            if (result === 'BWins') return isRoleA;
+            return false;
         }
 
         async function settleGame(gameId) {
             try {
+                // Get fresh game status with hashes/preimage
+                const statusResp = await fetch(`${API_BASE}/api/game/${gameId}/status`);
+                const status = await statusResp.json();
+
+                // Handle Fiber settlement (settle or cancel invoice on own node)
+                await handleFiberSettle(gameId, status);
+
+                // Tell backend to mark as settled
                 const resp = await fetch(`${API_BASE}/api/game/${gameId}/settle`, {
                     method: 'POST'
                 });
                 const data = await resp.json();
-                
+
                 let message = '';
                 if (data.amount_won > 0) {
                     message = `You won ${data.amount_won} shannons!`;
@@ -585,13 +923,13 @@
                 } else {
                     message = "It's a draw. No shannons won or lost.";
                 }
-                
+
                 alert(message);
                 closeModal();
                 refreshAll();
             } catch (e) {
                 console.error('Error settling game:', e);
-                alert('Error settling game');
+                alert('Error settling game: ' + (e.message || e));
             }
         }
 
