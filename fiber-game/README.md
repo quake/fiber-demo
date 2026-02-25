@@ -16,7 +16,7 @@ This demo implements fair two-player games where:
 | Game | Description |
 |------|-------------|
 | Rock-Paper-Scissors | Classic RPS with cryptographic commitments |
-| Guess Number | Player A picks 0-99, Player B guesses |
+| Guess Number | Oracle picks a secret number 0-99, both players guess, closest wins |
 
 ## Architecture
 

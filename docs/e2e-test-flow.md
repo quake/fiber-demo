@@ -242,7 +242,7 @@ curl http://localhost:3000/api/player-b/games/mine
 
 ### Guess the Number
 - Actions: Number 0-99
-- Rules: Player closer to Oracle's secret number wins
+- Rules: Oracle picks a secret number, both players guess, player closest to Oracle's number wins
 - Oracle commits to secret number at game creation
 
 ## Sequence Diagram
