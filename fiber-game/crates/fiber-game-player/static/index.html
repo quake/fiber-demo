@@ -108,6 +108,18 @@
         .amount {
             color: #00ff88;
         }
+        .result-win {
+            color: #00ff88;
+            font-weight: bold;
+        }
+        .result-lose {
+            color: #ff6b6b;
+            font-weight: bold;
+        }
+        .result-draw {
+            color: #ffd700;
+            font-weight: bold;
+        }
         .create-form {
             display: flex;
             gap: 15px;
@@ -468,19 +480,22 @@
                     return;
                 }
 
-                container.innerHTML = data.games.map(g => `
+                container.innerHTML = data.games.map(g => {
+                    const statusText = g.result ? formatResult(g.result, g.role) : `Phase: ${formatPhase(g.phase)}`;
+                    const statusClass = g.result ? `result-${getResultClass(g.result, g.role)}` : '';
+                    return `
                     <div class="game-item">
                         <div class="game-info">
                             <span class="game-type">${formatGameType(g.game_type)}</span>
                             <span class="amount">${g.amount_shannons.toLocaleString()} shannons</span>
                             <span>Role: ${g.role}</span>
-                            <span>Phase: ${formatPhase(g.phase)}</span>
+                            <span class="${statusClass}">${statusText}</span>
                         </div>
                         <button class="btn btn-secondary" onclick="openGame('${g.game_id}', '${g.game_type}', '${g.phase}')">
-                            ${getActionText(g.phase)}
+                            ${getActionText(g.phase, g.result)}
                         </button>
-                    </div>
-                `).join('');
+                    </div>`;
+                }).join('');
             } catch (e) {
                 console.error('Error fetching my games:', e);
             }
@@ -504,10 +519,25 @@
             return phases[phase] || phase;
         }
 
-        function getActionText(phase) {
+        function getActionText(phase, result) {
+            if (result) return 'View Result';
             if (phase === 'WaitingForAction') return 'Play';
             if (phase === 'Settled') return 'View';
             return 'View';
+        }
+
+        function formatResult(result, role) {
+            if (result === 'Draw') return 'Result: Draw';
+            const isPlayerA = role === 'A';
+            const won = (result === 'AWins' && isPlayerA) || (result === 'BWins' && !isPlayerA);
+            return won ? 'Result: You Won!' : 'Result: You Lost';
+        }
+
+        function getResultClass(result, role) {
+            if (result === 'Draw') return 'draw';
+            const isPlayerA = role === 'A';
+            const won = (result === 'AWins' && isPlayerA) || (result === 'BWins' && !isPlayerA);
+            return won ? 'win' : 'lose';
         }
 
         // Create game
@@ -834,9 +864,8 @@
                 if (status.phase === 'Settled') {
                     settleSection = '<p style="color: #00ff88;">Settlement Complete</p>';
                 } else if (status.can_settle) {
-                    settleSection = `<button class="btn" onclick="settleGame('${gameId}')">Settle Now</button>`;
-                } else if (isLoser) {
-                    settleSection = '<p style="color: #888;">Waiting for winner to settle...</p>';
+                    const btnLabel = isWinner ? 'Settle & Claim' : isLoser ? 'Cancel Invoice & Close' : 'Cancel & Close';
+                    settleSection = `<button class="btn" onclick="settleGame('${gameId}')">${btnLabel}</button>`;
                 }
 
                 content.innerHTML = `
@@ -878,13 +907,6 @@
             if (result === 'BWins') return isRoleA ? 'You Lose!' : 'You Win!';
             if (result === 'Draw') return "It's a Draw!";
             return result;
-        }
-
-        function getResultClass(result, role) {
-            if (result === 'Draw') return 'draw';
-            if (isPlayerWinner(result, role)) return 'win';
-            if (isPlayerLoser(result, role)) return 'lose';
-            return '';
         }
 
         function isPlayerWinner(result, role) {

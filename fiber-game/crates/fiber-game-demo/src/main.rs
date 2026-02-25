@@ -789,6 +789,7 @@ struct MyGameResponse {
     role: Player,
     phase: PlayerGamePhase,
     amount_shannons: u64,
+    result: Option<GameResult>,
 }
 
 #[derive(Serialize)]
@@ -987,6 +988,7 @@ async fn player_get_my_games(State(player): State<Arc<PlayerState>>) -> Json<MyG
             role: g.role,
             phase: g.phase,
             amount_shannons: g.amount_shannons,
+            result: g.result,
         })
         .collect();
 
@@ -1479,16 +1481,14 @@ async fn player_get_game_status(
     let games = player.games.read().unwrap();
     let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
 
-    // Only winner or draw can settle (loser doesn't need to settle)
+    // Winner, loser, and draw can all settle
+    // Winner: settle_invoice (claim funds) on frontend
+    // Loser: cancel_invoice (release held funds) on frontend
+    // Draw: cancel_invoice on frontend
     let can_settle = if game.phase == PlayerGamePhase::Settled {
         false
     } else {
-        match game.result {
-            Some(GameResult::AWins) => game.role == Player::A,
-            Some(GameResult::BWins) => game.role == Player::B,
-            Some(GameResult::Draw) => true, // Both can settle on draw
-            None => false,
-        }
+        game.result.is_some()
     };
 
     // Provide hex-encoded hashes/preimage for frontend Fiber RPC calls
