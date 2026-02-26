@@ -102,15 +102,6 @@ WaitingPayment ──[invoice submitted]──> WaitingPayment ──[pay notifi
 
 ## Running the Demo
 
-### Mock Mode (No Fiber Nodes)
-
-```bash
-cd fiber-escrow/crates/fiber-escrow-service && cargo run
-# Service at http://localhost:3000
-```
-
-### Real Fiber Mode
-
 ```bash
 cd fiber-escrow/crates/fiber-escrow-service
 FIBER_SELLER_RPC_URL=http://localhost:8227 \
@@ -125,8 +116,8 @@ The demo comes with pre-registered users (alice=buyer, bob=seller, carol=arbiter
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PORT` | HTTP server port | `3000` |
-| `FIBER_SELLER_RPC_URL` | Seller's Fiber node RPC URL (passed to frontend) | (none - mock mode) |
-| `FIBER_BUYER_RPC_URL` | Buyer's Fiber node RPC URL (passed to frontend) | (none - mock mode) |
+| `FIBER_SELLER_RPC_URL` | Seller's Fiber node RPC URL (passed to frontend) | None |
+| `FIBER_BUYER_RPC_URL` | Buyer's Fiber node RPC URL (passed to frontend) | None |
 
 ## Run Tests
 

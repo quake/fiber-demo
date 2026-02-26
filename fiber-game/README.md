@@ -140,19 +140,13 @@ The easiest way to run the demo is using the combined service, which starts the 
 ### 1. Combined Demo (Recommended)
 
 ```bash
-# Start combined Oracle + 2 Players (http://localhost:3000)
-cd fiber-game/crates/fiber-game-demo && cargo run
-```
-
-Open http://localhost:3000 and use the **Player selector** dropdown to switch between Player A and Player B (open two browser windows for two-player testing).
-
-#### Real Fiber Integration
-To test with real Fiber nodes, set the RPC URLs. These are passed to the frontend via the backend — the backend itself never connects to Fiber nodes:
-```bash
+cd fiber-game/crates/fiber-game-demo
 FIBER_PLAYER_A_RPC_URL=http://localhost:8227 \
 FIBER_PLAYER_B_RPC_URL=http://localhost:8229 \
 cargo run
 ```
+
+Open http://localhost:3000 and use the **Player selector** dropdown to switch between Player A and Player B (open two browser windows for two-player testing).
 
 ### 2. Separate Services (Standalone)
 
@@ -175,13 +169,12 @@ cd fiber-game/crates/fiber-game-player && PORT=3002 cargo run
 |--------------|-------------|---------|
 | `PORT` | HTTP service port | 3000 |
 | `ORACLE_URL` | URL of the Oracle service (for players) | http://localhost:3000 |
-| `FIBER_PLAYER_A_RPC_URL` | Fiber node RPC URL for Player A (passed to frontend) | None (Mock mode) |
-| `FIBER_PLAYER_B_RPC_URL` | Fiber node RPC URL for Player B (passed to frontend) | None (Mock mode) |
+| `FIBER_PLAYER_A_RPC_URL` | Fiber node RPC URL for Player A (passed to frontend) | None |
+| `FIBER_PLAYER_B_RPC_URL` | Fiber node RPC URL for Player B (passed to frontend) | None |
 
 ## Key Concepts
 
 - **Shannons**: All amounts in this demo use **shannons**, the native unit of CKB (1 CKB = 10^8 shannons).
-- **Mock Mode**: By default, the services run in "Mock Mode". Without Fiber RPC URLs, the frontend gracefully skips Fiber operations and the backend manages game state independently.
 - **Hold Invoices**: Funds are locked in a Fiber hold invoice when a game starts and only released to the winner upon reveal.
 
 ### Hold Invoice Security Model

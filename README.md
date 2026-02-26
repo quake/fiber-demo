@@ -82,18 +82,6 @@ FIBER_PLAYER_B_RPC_URL=http://localhost:8229 \
 cargo run
 ```
 
-### Mock Mode (No Fiber Nodes)
-
-Both demos can run without real Fiber nodes for testing. Without Fiber RPC URLs configured, the frontends gracefully skip Fiber operations and the backends manage state independently:
-
-```bash
-# Escrow
-cd fiber-escrow/crates/fiber-escrow-service && cargo run
-
-# Game
-cd fiber-game/crates/fiber-game-demo && cargo run
-```
-
 ## Documentation
 
 See each project's README for detailed usage:
