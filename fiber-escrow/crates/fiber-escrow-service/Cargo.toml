@@ -9,6 +9,7 @@ description = "Fiber Escrow Service with multi-role Web UI"
 [dependencies]
 fiber-core = { workspace = true }
 axum = { workspace = true }
+tower = { workspace = true }
 tower-http = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

@@ -6,7 +6,7 @@
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{self, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -23,6 +23,7 @@ use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
@@ -968,7 +969,15 @@ fn create_router(state: Arc<PlayerState>) -> Router {
         .route("/api/game/:game_id/settle", post(settle))
         .route("/api/game/:game_id/invoice-created", post(player_invoice_created))
         .route("/api/game/:game_id/payment-done", post(player_payment_done))
-        .nest_service("/", ServeDir::new("static"))
+        .nest_service(
+            "/",
+            tower::ServiceBuilder::new()
+                .layer(SetResponseHeaderLayer::overriding(
+                    http::header::CACHE_CONTROL,
+                    http::HeaderValue::from_static("no-cache"),
+                ))
+                .service(ServeDir::new("static")),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

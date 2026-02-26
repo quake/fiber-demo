@@ -15,6 +15,7 @@ use axum::{
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use handlers::*;
@@ -102,8 +103,15 @@ async fn main() {
         .route("/api/config", get(get_config))
         // Health
         .route("/api/health", get(health))
-        // Static files
-        .fallback_service(ServeDir::new("static"))
+        // Static files (no-cache to avoid stale files across demos)
+        .fallback_service(
+            tower::ServiceBuilder::new()
+                .layer(SetResponseHeaderLayer::overriding(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("no-cache"),
+                ))
+                .service(ServeDir::new("static")),
+        )
         .layer(cors)
         .with_state(state);
 

@@ -12,7 +12,7 @@
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{self, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -31,6 +31,7 @@ use std::time::Instant;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
@@ -1680,8 +1681,16 @@ fn create_app(state: Arc<AppState>) -> Router {
         .nest("/api/oracle", create_oracle_router())
         .nest("/api/player-a", create_player_router(get_player_a))
         .nest("/api/player-b", create_player_router(get_player_b))
-        // Serve unified UI at root
-        .nest_service("/", ServeDir::new("static"))
+        // Serve unified UI at root (no-cache to avoid stale files across demos)
+        .nest_service(
+            "/",
+            tower::ServiceBuilder::new()
+                .layer(SetResponseHeaderLayer::overriding(
+                    http::header::CACHE_CONTROL,
+                    http::HeaderValue::from_static("no-cache"),
+                ))
+                .service(ServeDir::new("static")),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
