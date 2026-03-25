@@ -407,10 +407,11 @@ pub async fn get_order(
 
     // Include preimage for seller if order is completed (for Fiber settlement)
     let mut response = serde_json::json!(order_to_response(&order));
-    
+
     if order.seller_id == user_id && order.status == OrderStatus::Completed {
         if let Some(preimage) = state.get_revealed_preimage(order_id) {
-            response["preimage"] = serde_json::json!(format!("0x{}", hex::encode(preimage.as_bytes())));
+            response["preimage"] =
+                serde_json::json!(format!("0x{}", hex::encode(preimage.as_bytes())));
         }
     }
 
@@ -649,7 +650,10 @@ pub async fn confirm_order(
 
     // No Fiber RPC calls — seller's frontend will call settle_invoice
     // after seeing the preimage in the order details.
-    tracing::info!("Order {} completed, preimage available for seller settlement", order_id.0);
+    tracing::info!(
+        "Order {} completed, preimage available for seller settlement",
+        order_id.0
+    );
 
     (
         StatusCode::OK,
@@ -795,7 +799,10 @@ pub async fn resolve_dispute(
 
 // ============ System handlers ============
 
-pub async fn tick(State(state): State<AppState>, Json(req): Json<TickRequest>) -> impl IntoResponse {
+pub async fn tick(
+    State(state): State<AppState>,
+    Json(req): Json<TickRequest>,
+) -> impl IntoResponse {
     state.advance_time(req.seconds);
 
     // Process expired orders (auto-confirm shipped orders)
@@ -804,11 +811,16 @@ pub async fn tick(State(state): State<AppState>, Json(req): Json<TickRequest>) -
     // No Fiber RPC calls — seller's frontend will see completed status
     // and call settle_invoice using the preimage from order details.
     for order_id in &expired_orders {
-        tracing::info!("Order {} expired and auto-completed, awaiting seller settlement", order_id.0);
+        tracing::info!(
+            "Order {} expired and auto-completed, awaiting seller settlement",
+            order_id.0
+        );
     }
 
     let expired: Vec<Uuid> = expired_orders.iter().map(|id| id.0).collect();
-    Json(serde_json::json!(TickResponse { expired_orders: expired }))
+    Json(serde_json::json!(TickResponse {
+        expired_orders: expired
+    }))
 }
 
 // ============ Config handler ============

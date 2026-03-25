@@ -32,15 +32,25 @@ async fn main() {
     let buyer_rpc_url = std::env::var("FIBER_BUYER_RPC_URL").ok();
 
     if let Some(ref url) = seller_rpc_url {
-        tracing::info!("Seller Fiber RPC URL configured: {} (used by seller's frontend)", url);
+        tracing::info!(
+            "Seller Fiber RPC URL configured: {} (used by seller's frontend)",
+            url
+        );
     } else {
-        tracing::info!("Seller Fiber RPC not configured (set FIBER_SELLER_RPC_URL for real payments)");
+        tracing::info!(
+            "Seller Fiber RPC not configured (set FIBER_SELLER_RPC_URL for real payments)"
+        );
     }
 
     if let Some(ref url) = buyer_rpc_url {
-        tracing::info!("Buyer Fiber RPC URL configured: {} (used by buyer's frontend)", url);
+        tracing::info!(
+            "Buyer Fiber RPC URL configured: {} (used by buyer's frontend)",
+            url
+        );
     } else {
-        tracing::info!("Buyer Fiber RPC not configured (set FIBER_BUYER_RPC_URL for real payments)");
+        tracing::info!(
+            "Buyer Fiber RPC not configured (set FIBER_BUYER_RPC_URL for real payments)"
+        );
     }
 
     let state = AppState::with_fiber_rpc_urls(seller_rpc_url, buyer_rpc_url);
