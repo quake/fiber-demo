@@ -104,6 +104,7 @@ struct OracleGameState {
     result: Option<GameResult>,
     signature: Option<[u8; 64]>,
     created_at: Instant,
+    reveal_deadline: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -119,7 +120,10 @@ enum OracleGameStatus {
     InProgress,
     Completed,
     Cancelled,
+    TimedOut,
 }
+
+const REVEAL_TIMEOUT_SECS: u64 = 120;
 
 impl OracleState {
     fn new() -> Self {
@@ -356,6 +360,7 @@ async fn oracle_create_game(
         result: None,
         signature: None,
         created_at: Instant::now(),
+        reveal_deadline: None,
     };
 
     state
@@ -613,6 +618,26 @@ async fn oracle_submit_reveal(
         Player::B => game.reveal_b = Some(reveal),
     }
 
+    // Set reveal deadline if this is the first reveal
+    if game.reveal_deadline.is_none() {
+        game.reveal_deadline =
+            Some(Instant::now() + std::time::Duration::from_secs(REVEAL_TIMEOUT_SECS));
+    }
+
+    // Check if game has timed out
+    if let Some(deadline) = game.reveal_deadline {
+        if Instant::now() > deadline {
+            game.status = OracleGameStatus::TimedOut;
+            info!(
+                "Oracle: Game {:?} timed out waiting for opponent reveal",
+                game_id
+            );
+            return Ok(Json(StatusResponse {
+                status: "timed_out".to_string(),
+            }));
+        }
+    }
+
     // Check if both reveals are in, then judge
     if let (Some(reveal_a), Some(reveal_b)) = (&game.reveal_a, &game.reveal_b) {
         let action_a = &reveal_a.action;
@@ -669,6 +694,7 @@ async fn oracle_get_game_status(
         OracleGameStatus::InProgress => "in_progress",
         OracleGameStatus::Completed => "completed",
         OracleGameStatus::Cancelled => "cancelled",
+        OracleGameStatus::TimedOut => "timed_out",
     };
 
     Ok(Json(OracleGameStatusResponse {

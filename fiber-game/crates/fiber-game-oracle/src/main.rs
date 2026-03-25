@@ -88,6 +88,7 @@ struct GameState {
     result: Option<GameResult>,
     signature: Option<[u8; 64]>,
     created_at: Instant,
+    reveal_deadline: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -103,7 +104,10 @@ enum GameStatus {
     InProgress,
     Completed,
     Cancelled,
+    TimedOut,
 }
+
+const REVEAL_TIMEOUT_SECS: u64 = 120;
 
 // === Request/Response types ===
 
@@ -337,6 +341,7 @@ async fn create_game(
         result: None,
         signature: None,
         created_at: Instant::now(),
+        reveal_deadline: None,
     };
 
     state.games.write().unwrap().insert(game_id, game_state);
@@ -588,6 +593,23 @@ async fn submit_reveal(
         Player::B => game.reveal_b = Some(reveal),
     }
 
+    // Set reveal deadline if this is the first reveal
+    if game.reveal_deadline.is_none() {
+        game.reveal_deadline =
+            Some(Instant::now() + std::time::Duration::from_secs(REVEAL_TIMEOUT_SECS));
+    }
+
+    // Check if game has timed out
+    if let Some(deadline) = game.reveal_deadline {
+        if Instant::now() > deadline {
+            game.status = GameStatus::TimedOut;
+            info!("Game {:?} timed out waiting for opponent reveal", game_id);
+            return Ok(Json(StatusResponse {
+                status: "timed_out".to_string(),
+            }));
+        }
+    }
+
     // Check if both reveals are in, then judge
     if let (Some(reveal_a), Some(reveal_b)) = (&game.reveal_a, &game.reveal_b) {
         let action_a = &reveal_a.action;
@@ -642,6 +664,7 @@ async fn get_game_status(
         GameStatus::InProgress => "in_progress",
         GameStatus::Completed => "completed",
         GameStatus::Cancelled => "cancelled",
+        GameStatus::TimedOut => "timed_out",
     };
 
     Ok(Json(GameStatusResponse {
@@ -710,6 +733,23 @@ async fn get_result(
     }))
 }
 
+async fn cleanup_timed_out_games(state: Arc<OracleState>) {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        let mut games = state.games.write().unwrap();
+        for (game_id, game) in games.iter_mut() {
+            if game.status == GameStatus::InProgress {
+                if let Some(deadline) = game.reveal_deadline {
+                    if Instant::now() > deadline {
+                        game.status = GameStatus::TimedOut;
+                        info!("Game {:?} timed out (background cleanup)", game_id);
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn create_router(state: Arc<OracleState>) -> Router {
     Router::new()
         .route("/oracle/pubkey", get(get_pubkey))
@@ -750,6 +790,11 @@ async fn main() {
         .unwrap_or(3000);
 
     let state = Arc::new(OracleState::new());
+
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        cleanup_timed_out_games(state_clone).await;
+    });
 
     info!(
         "Oracle public key: {}",
