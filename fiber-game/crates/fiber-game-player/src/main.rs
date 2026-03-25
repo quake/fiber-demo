@@ -820,6 +820,19 @@ async fn get_game_status(
                             game.phase = PlayerGamePhase::WaitingForAction;
                         }
                     }
+                } else if status_data["status"].as_str() == Some("timed_out")
+                    || status_data["status"].as_str() == Some("cancelled")
+                {
+                    // Oracle game timed out or was cancelled
+                    let mut games = state.games.write().unwrap();
+                    if let Some(game) = games.get_mut(&game_id) {
+                        game.result = Some(GameResult::Draw);
+                        // Keep phase as is - player can cancel invoice
+                    }
+                    info!(
+                        "{}: Game {:?} timed out at Oracle, treating as Draw",
+                        state.player_name, game_id
+                    );
                 }
             }
         }
