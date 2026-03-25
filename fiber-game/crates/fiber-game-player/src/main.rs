@@ -222,7 +222,12 @@ struct PaymentDoneResponse {
 }
 
 impl PlayerState {
-    fn new(player_id: Uuid, player_name: String, oracle_url: String, fiber_rpc_url: Option<String>) -> Self {
+    fn new(
+        player_id: Uuid,
+        player_name: String,
+        oracle_url: String,
+        fiber_rpc_url: Option<String>,
+    ) -> Self {
         Self {
             player_id,
             player_name,
@@ -236,7 +241,9 @@ impl PlayerState {
 
 // === Route handlers ===
 
-async fn get_player_info(State(state): State<Arc<PlayerState>>) -> Result<Json<PlayerInfoResponse>, AppError> {
+async fn get_player_info(
+    State(state): State<Arc<PlayerState>>,
+) -> Result<Json<PlayerInfoResponse>, AppError> {
     Ok(Json(PlayerInfoResponse {
         player_id: state.player_id,
         player_name: state.player_name.clone(),
@@ -304,7 +311,8 @@ async fn get_my_games(State(state): State<Arc<PlayerState>>) -> Json<MyGamesResp
             if let Ok(status_data) = resp.json::<serde_json::Value>().await {
                 if status_data["has_opponent"].as_bool() == Some(true) {
                     // Get opponent's (B's) payment_hash so frontend can create invoice
-                    let get_hash_url = format!("{}/game/{}/payment-hash/B", state.oracle_url, game_id);
+                    let get_hash_url =
+                        format!("{}/game/{}/payment-hash/B", state.oracle_url, game_id);
                     if let Ok(hash_resp) = state.http_client.get(&get_hash_url).send().await {
                         if hash_resp.status().is_success() {
                             if let Ok(hash_data) = hash_resp.json::<serde_json::Value>().await {
@@ -314,12 +322,16 @@ async fn get_my_games(State(state): State<Arc<PlayerState>>) -> Json<MyGamesResp
                                         .map(|v| v.as_u64().unwrap_or(0) as u8)
                                         .collect();
 
-                                    if let Ok(hash_arr) = <[u8; 32]>::try_from(hash_bytes.as_slice()) {
-                                        let opponent_payment_hash = PaymentHash::from_bytes(hash_arr);
+                                    if let Ok(hash_arr) =
+                                        <[u8; 32]>::try_from(hash_bytes.as_slice())
+                                    {
+                                        let opponent_payment_hash =
+                                            PaymentHash::from_bytes(hash_arr);
 
                                         let mut games = state.games.write().unwrap();
                                         if let Some(game) = games.get_mut(&game_id) {
-                                            game.opponent_payment_hash = Some(opponent_payment_hash);
+                                            game.opponent_payment_hash =
+                                                Some(opponent_payment_hash);
                                             // Transition to WaitingForAction — frontend will
                                             // handle invoice creation via Fiber RPC
                                             game.phase = PlayerGamePhase::WaitingForAction;
@@ -375,8 +387,8 @@ async fn create_game(
         .await
         .map_err(|e| AppError(e.to_string()))?;
 
-    let game_id: GameId = serde_json::from_value(resp["game_id"].clone())
-        .map_err(|e| AppError(e.to_string()))?;
+    let game_id: GameId =
+        serde_json::from_value(resp["game_id"].clone()).map_err(|e| AppError(e.to_string()))?;
 
     let oracle_pubkey = hex::decode(resp["oracle_pubkey"].as_str().unwrap_or(""))
         .ok()
@@ -398,14 +410,18 @@ async fn create_game(
         "preimage": preimage,
     });
 
-    state.http_client
+    state
+        .http_client
         .post(&submit_hash_url)
         .json(&submit_hash_body)
         .send()
         .await
         .map_err(|e| AppError(format!("Failed to submit payment hash: {}", e)))?;
 
-    info!("{}: Submitted payment_hash to Oracle for game {:?}", state.player_name, game_id);
+    info!(
+        "{}: Submitted payment_hash to Oracle for game {:?}",
+        state.player_name, game_id
+    );
 
     let game_state = PlayerGameState {
         role: Player::A,
@@ -443,7 +459,10 @@ async fn join_game(
     Json(req): Json<JoinGameRequest>,
 ) -> Result<Json<JoinGameResponse>, AppError> {
     let url = format!("{}/game/{}/join", state.oracle_url, req.game_id);
-    info!("{}: Joining game {:?}, calling {}", state.player_name, req.game_id, url);
+    info!(
+        "{}: Joining game {:?}, calling {}",
+        state.player_name, req.game_id, url
+    );
 
     let body = serde_json::json!({
         "player_b_id": state.player_id,
@@ -466,7 +485,10 @@ async fn join_game(
         AppError(e.to_string())
     })?;
 
-    info!("{}: Join response status={}, body={}", state.player_name, status, text);
+    info!(
+        "{}: Join response status={}, body={}",
+        state.player_name, status, text
+    );
 
     let resp: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
         error!("{}: Failed to parse JSON: {}", state.player_name, e);
@@ -476,7 +498,10 @@ async fn join_game(
     // Check for error in response
     if let Some(error_val) = resp.get("error") {
         let error_msg = error_val.as_str().unwrap_or("Unknown error");
-        error!("{}: Oracle returned error: {}", state.player_name, error_msg);
+        error!(
+            "{}: Oracle returned error: {}",
+            state.player_name, error_msg
+        );
         return Err(AppError(error_msg.to_string()));
     }
 
@@ -491,8 +516,8 @@ async fn join_game(
     let amount_shannons = resp["amount_shannons"].as_u64().unwrap_or(0);
 
     // Parse game_type from Oracle response
-    let game_type: GameType = serde_json::from_value(resp["game_type"].clone())
-        .unwrap_or(GameType::RockPaperScissors);
+    let game_type: GameType =
+        serde_json::from_value(resp["game_type"].clone()).unwrap_or(GameType::RockPaperScissors);
 
     let preimage = Preimage::random();
     let payment_hash = preimage.payment_hash();
@@ -511,25 +536,32 @@ async fn join_game(
         "preimage": preimage,
     });
 
-    state.http_client
+    state
+        .http_client
         .post(&submit_hash_url)
         .json(&submit_hash_body)
         .send()
         .await
         .map_err(|e| AppError(format!("Failed to submit payment hash: {}", e)))?;
 
-    info!("{}: Submitted payment_hash to Oracle for game {:?}", state.player_name, req.game_id);
+    info!(
+        "{}: Submitted payment_hash to Oracle for game {:?}",
+        state.player_name, req.game_id
+    );
 
     // 2. Get opponent's (A's) payment_hash from Oracle
     let get_hash_url = format!("{}/game/{}/payment-hash/A", state.oracle_url, req.game_id);
-    let opponent_hash_resp = state.http_client
+    let opponent_hash_resp = state
+        .http_client
         .get(&get_hash_url)
         .send()
         .await
         .map_err(|e| AppError(format!("Failed to get opponent payment hash: {}", e)))?;
 
     if !opponent_hash_resp.status().is_success() {
-        return Err(AppError("Opponent (A) hasn't submitted their payment hash. This shouldn't happen.".to_string()));
+        return Err(AppError(
+            "Opponent (A) hasn't submitted their payment hash. This shouldn't happen.".to_string(),
+        ));
     }
 
     let opponent_hash_data: serde_json::Value = opponent_hash_resp
@@ -537,9 +569,12 @@ async fn join_game(
         .await
         .map_err(|e| AppError(format!("Failed to parse opponent payment hash: {}", e)))?;
 
-    let opponent_payment_hash_array = opponent_hash_data["payment_hash"]
-        .as_array()
-        .ok_or_else(|| AppError("Invalid opponent payment hash format: expected array".to_string()))?;
+    let opponent_payment_hash_array =
+        opponent_hash_data["payment_hash"]
+            .as_array()
+            .ok_or_else(|| {
+                AppError("Invalid opponent payment hash format: expected array".to_string())
+            })?;
 
     let opponent_payment_hash_bytes: Vec<u8> = opponent_payment_hash_array
         .iter()
@@ -547,11 +582,16 @@ async fn join_game(
         .collect();
 
     let opponent_payment_hash = PaymentHash::from_bytes(
-        opponent_payment_hash_bytes.as_slice().try_into()
-            .map_err(|_| AppError("Invalid payment hash length".to_string()))?
+        opponent_payment_hash_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| AppError("Invalid payment hash length".to_string()))?,
     );
 
-    info!("{}: Got opponent's payment_hash for game {:?}", state.player_name, req.game_id);
+    info!(
+        "{}: Got opponent's payment_hash for game {:?}",
+        state.player_name, req.game_id
+    );
 
     // Note: Invoice creation and payment are now handled by the frontend
     // The frontend will:
@@ -608,7 +648,9 @@ async fn play(
     // =========================================================================
     let (role, action, salt, commitment) = {
         let mut games = state.games.write().unwrap();
-        let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+        let game = games
+            .get_mut(&game_id)
+            .ok_or(AppError::from("Game not found"))?;
         game.action = Some(req.action.clone());
 
         let commitment = Commitment::new(&req.action.to_bytes(), &game.salt);
@@ -632,11 +674,16 @@ async fn play(
         .await
         .map_err(|e| AppError(e.to_string()))?;
 
-    info!("{}: Submitted commitment for game {:?}", state.player_name, game_id);
+    info!(
+        "{}: Submitted commitment for game {:?}",
+        state.player_name, game_id
+    );
 
     {
         let mut games = state.games.write().unwrap();
-        let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+        let game = games
+            .get_mut(&game_id)
+            .ok_or(AppError::from("Game not found"))?;
         game.phase = PlayerGamePhase::Committed;
     }
 
@@ -668,12 +715,17 @@ async fn play(
         .await
         .map_err(|e| AppError(e.to_string()))?;
 
-    info!("{}: Submitted reveal for game {:?}: {:?}", state.player_name, game_id, reveal_result);
+    info!(
+        "{}: Submitted reveal for game {:?}: {:?}",
+        state.player_name, game_id, reveal_result
+    );
 
     let status = reveal_result["status"].as_str().unwrap_or("unknown");
     {
         let mut games = state.games.write().unwrap();
-        let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+        let game = games
+            .get_mut(&game_id)
+            .ok_or(AppError::from("Game not found"))?;
         if status == "game_complete" {
             game.phase = PlayerGamePhase::WaitingForResult;
         } else {
@@ -693,7 +745,9 @@ async fn get_game_status(
     // Check current phase
     let current_phase = {
         let games = state.games.read().unwrap();
-        let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+        let game = games
+            .get(&game_id)
+            .ok_or(AppError::from("Game not found"))?;
         game.phase
     };
 
@@ -708,14 +762,21 @@ async fn get_game_status(
                     // Opponent has joined! Get their payment_hash
                     let needs_hash = {
                         let games = state.games.read().unwrap();
-                        games.get(&game_id).map(|g| g.opponent_payment_hash.is_none()).unwrap_or(false)
+                        games
+                            .get(&game_id)
+                            .map(|g| g.opponent_payment_hash.is_none())
+                            .unwrap_or(false)
                     };
 
                     let mut hash_obtained = !needs_hash;
 
                     if needs_hash {
-                        let get_hash_url = format!("{}/game/{}/payment-hash/B", state.oracle_url, game_id);
-                        info!("{}: Trying to get B's payment_hash from {}", state.player_name, get_hash_url);
+                        let get_hash_url =
+                            format!("{}/game/{}/payment-hash/B", state.oracle_url, game_id);
+                        info!(
+                            "{}: Trying to get B's payment_hash from {}",
+                            state.player_name, get_hash_url
+                        );
 
                         if let Ok(hash_resp) = state.http_client.get(&get_hash_url).send().await {
                             if hash_resp.status().is_success() {
@@ -726,16 +787,23 @@ async fn get_game_status(
                                             .map(|v| v.as_u64().unwrap_or(0) as u8)
                                             .collect();
 
-                                        if let Ok(hash_arr) = <[u8; 32]>::try_from(hash_bytes.as_slice()) {
-                                            let opponent_payment_hash = PaymentHash::from_bytes(hash_arr);
+                                        if let Ok(hash_arr) =
+                                            <[u8; 32]>::try_from(hash_bytes.as_slice())
+                                        {
+                                            let opponent_payment_hash =
+                                                PaymentHash::from_bytes(hash_arr);
 
                                             let mut games = state.games.write().unwrap();
                                             if let Some(game) = games.get_mut(&game_id) {
-                                                game.opponent_payment_hash = Some(opponent_payment_hash);
+                                                game.opponent_payment_hash =
+                                                    Some(opponent_payment_hash);
                                             }
 
                                             hash_obtained = true;
-                                            info!("{}: Got B's payment_hash for game {:?}", state.player_name, game_id);
+                                            info!(
+                                                "{}: Got B's payment_hash for game {:?}",
+                                                state.player_name, game_id
+                                            );
                                         }
                                     }
                                 }
@@ -760,8 +828,12 @@ async fn get_game_status(
     // Check if we need to poll Oracle for result
     let should_poll = {
         let games = state.games.read().unwrap();
-        let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
-        game.result.is_none() && (game.phase == PlayerGamePhase::Revealed || game.phase == PlayerGamePhase::WaitingForResult)
+        let game = games
+            .get(&game_id)
+            .ok_or(AppError::from("Game not found"))?;
+        game.result.is_none()
+            && (game.phase == PlayerGamePhase::Revealed
+                || game.phase == PlayerGamePhase::WaitingForResult)
     };
 
     if should_poll {
@@ -773,14 +845,14 @@ async fn get_game_status(
             .await
             .map_err(|e| AppError(e.to_string()))?;
 
-        let result_data: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AppError(e.to_string()))?;
+        let result_data: serde_json::Value =
+            resp.json().await.map_err(|e| AppError(e.to_string()))?;
 
         if result_data["status"].as_str() == Some("completed") {
             let mut games = state.games.write().unwrap();
-            let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+            let game = games
+                .get_mut(&game_id)
+                .ok_or(AppError::from("Game not found"))?;
 
             if let Some(result_str) = result_data["result"].as_str() {
                 game.result = match result_str {
@@ -803,7 +875,9 @@ async fn get_game_status(
 
                 // Extract oracle's secret number for Guess Number games
                 if let Some(oracle_secret) = game_data.get("oracle_secret") {
-                    if let Some(secret_num) = oracle_secret.get("secret_number").and_then(|v| v.as_u64()) {
+                    if let Some(secret_num) =
+                        oracle_secret.get("secret_number").and_then(|v| v.as_u64())
+                    {
                         game.oracle_secret_number = Some(secret_num as u8);
                     }
                 }
@@ -825,7 +899,10 @@ async fn get_game_status(
                         let mut arr = [0u8; 32];
                         arr.copy_from_slice(&preimage_bytes);
                         game.opponent_preimage = Some(Preimage::from_bytes(arr));
-                        info!("{}: Got opponent's preimage from Oracle for game {:?}", state.player_name, game_id);
+                        info!(
+                            "{}: Got opponent's preimage from Oracle for game {:?}",
+                            state.player_name, game_id
+                        );
                     }
                 }
             }
@@ -835,7 +912,9 @@ async fn get_game_status(
     }
 
     let games = state.games.read().unwrap();
-    let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     // Winner, loser, and draw can all settle
     // Winner: settle_invoice (claim funds) on frontend
@@ -848,12 +927,14 @@ async fn get_game_status(
     };
 
     // Provide hex-encoded hashes/preimage for frontend Fiber RPC calls
-    let opponent_payment_hash_hex = game.opponent_payment_hash.as_ref().map(|h| {
-        format!("0x{}", hex::encode(h.as_bytes()))
-    });
-    let opponent_preimage_hex = game.opponent_preimage.as_ref().map(|p| {
-        format!("0x{}", hex::encode(p.as_bytes()))
-    });
+    let opponent_payment_hash_hex = game
+        .opponent_payment_hash
+        .as_ref()
+        .map(|h| format!("0x{}", hex::encode(h.as_bytes())));
+    let opponent_preimage_hex = game
+        .opponent_preimage
+        .as_ref()
+        .map(|p| format!("0x{}", hex::encode(p.as_bytes())));
     let my_payment_hash_hex = Some(format!("0x{}", hex::encode(game.payment_hash.as_bytes())));
 
     Ok(Json(GameStatusResponse {
@@ -877,7 +958,9 @@ async fn settle(
     // Get game state
     let (result, amount_won, role) = {
         let games = state.games.read().unwrap();
-        let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+        let game = games
+            .get(&game_id)
+            .ok_or(AppError::from("Game not found"))?;
 
         let result = game.result.ok_or(AppError::from("Game not complete"))?;
 
@@ -886,8 +969,12 @@ async fn settle(
         }
 
         let amount_won = match (result, game.role) {
-            (GameResult::AWins, Player::A) | (GameResult::BWins, Player::B) => game.amount_shannons as i64,
-            (GameResult::BWins, Player::A) | (GameResult::AWins, Player::B) => -(game.amount_shannons as i64),
+            (GameResult::AWins, Player::A) | (GameResult::BWins, Player::B) => {
+                game.amount_shannons as i64
+            }
+            (GameResult::BWins, Player::A) | (GameResult::AWins, Player::B) => {
+                -(game.amount_shannons as i64)
+            }
             (GameResult::Draw, _) => 0,
         };
 
@@ -905,12 +992,16 @@ async fn settle(
     // Loser frontend: calls cancel_invoice to refund opponent
     // Draw frontend: both call cancel_invoice
 
-    info!("{}: Player {:?} marking game {:?} as settled: amount_won = {}",
-          state.player_name, role, game_id, amount_won);
+    info!(
+        "{}: Player {:?} marking game {:?} as settled: amount_won = {}",
+        state.player_name, role, game_id, amount_won
+    );
 
     {
         let mut games = state.games.write().unwrap();
-        let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+        let game = games
+            .get_mut(&game_id)
+            .ok_or(AppError::from("Game not found"))?;
         game.phase = PlayerGamePhase::Settled;
     }
 
@@ -928,11 +1019,16 @@ async fn player_invoice_created(
     Json(req): Json<InvoiceCreatedRequest>,
 ) -> Result<Json<InvoiceCreatedResponse>, AppError> {
     let mut games = state.games.write().unwrap();
-    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get_mut(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     game.my_invoice_string = Some(req.invoice_string);
 
-    info!("{}: Frontend reported invoice created for game {:?}", state.player_name, game_id);
+    info!(
+        "{}: Frontend reported invoice created for game {:?}",
+        state.player_name, game_id
+    );
 
     Ok(Json(InvoiceCreatedResponse {
         status: "ok".to_string(),
@@ -946,11 +1042,16 @@ async fn player_payment_done(
     Json(_req): Json<PaymentDoneRequest>,
 ) -> Result<Json<PaymentDoneResponse>, AppError> {
     let mut games = state.games.write().unwrap();
-    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get_mut(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     game.paid_opponent = true;
 
-    info!("{}: Frontend reported payment done for game {:?}", state.player_name, game_id);
+    info!(
+        "{}: Frontend reported payment done for game {:?}",
+        state.player_name, game_id
+    );
 
     Ok(Json(PaymentDoneResponse {
         status: "ok".to_string(),
@@ -967,7 +1068,10 @@ fn create_router(state: Arc<PlayerState>) -> Router {
         .route("/api/game/:game_id/play", post(play))
         .route("/api/game/:game_id/status", get(get_game_status))
         .route("/api/game/:game_id/settle", post(settle))
-        .route("/api/game/:game_id/invoice-created", post(player_invoice_created))
+        .route(
+            "/api/game/:game_id/invoice-created",
+            post(player_invoice_created),
+        )
         .route("/api/game/:game_id/payment-done", post(player_payment_done))
         .nest_service(
             "/",
@@ -992,7 +1096,8 @@ async fn main() {
 
     let player_id = Uuid::new_v4();
     let player_name = std::env::var("PLAYER_NAME").unwrap_or_else(|_| "Player".to_string());
-    let oracle_url = std::env::var("ORACLE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let oracle_url =
+        std::env::var("ORACLE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "3001".to_string())
         .parse()
@@ -1007,13 +1112,20 @@ async fn main() {
         info!("No FIBER_RPC_URL set (mock mode — no real Fiber payments)");
     }
 
-    let state = Arc::new(PlayerState::new(player_id, player_name.clone(), oracle_url, fiber_rpc_url));
+    let state = Arc::new(PlayerState::new(
+        player_id,
+        player_name.clone(),
+        oracle_url,
+        fiber_rpc_url,
+    ));
 
     info!("Player '{}' ID: {}", player_name, player_id);
 
     let app = create_router(state);
 
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
+        .await
+        .unwrap();
     info!("Player service listening on http://0.0.0.0:{}", port);
     info!("  All Fiber RPC calls are made by the frontend directly");
 

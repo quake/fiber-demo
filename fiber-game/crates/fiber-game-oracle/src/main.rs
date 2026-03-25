@@ -357,7 +357,9 @@ async fn join_game(
     Json(req): Json<JoinGameRequest>,
 ) -> Result<Json<JoinGameResponse>, AppError> {
     let mut games = state.games.write().unwrap();
-    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get_mut(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     if game.status != GameStatus::WaitingForOpponent {
         return Err(AppError::from("Game is not available to join"));
@@ -384,7 +386,9 @@ async fn submit_payment_hash(
     Json(req): Json<SubmitPaymentHashRequest>,
 ) -> Result<Json<StatusResponse>, AppError> {
     let mut games = state.games.write().unwrap();
-    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get_mut(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     match req.player {
         Player::A => {
@@ -397,7 +401,10 @@ async fn submit_payment_hash(
         }
     }
 
-    info!("Received payment_hash from {:?} for game {:?}", req.player, game_id);
+    info!(
+        "Received payment_hash from {:?} for game {:?}",
+        req.player, game_id
+    );
 
     Ok(Json(StatusResponse {
         status: "payment_hash_received".to_string(),
@@ -409,11 +416,17 @@ async fn get_payment_hash(
     Path((game_id, player)): Path<(GameId, String)>,
 ) -> Result<Json<PaymentHashResponse>, AppError> {
     let games = state.games.read().unwrap();
-    let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     let payment_hash = match player.as_str() {
-        "A" | "a" => game.payment_hash_a.ok_or(AppError::from("Payment hash A not submitted"))?,
-        "B" | "b" => game.payment_hash_b.ok_or(AppError::from("Payment hash B not submitted"))?,
+        "A" | "a" => game
+            .payment_hash_a
+            .ok_or(AppError::from("Payment hash A not submitted"))?,
+        "B" | "b" => game
+            .payment_hash_b
+            .ok_or(AppError::from("Payment hash B not submitted"))?,
         _ => return Err(AppError::from("Invalid player")),
     };
 
@@ -426,7 +439,9 @@ async fn submit_invoice(
     Json(req): Json<SubmitInvoiceRequest>,
 ) -> Result<Json<StatusResponse>, AppError> {
     let mut games = state.games.write().unwrap();
-    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get_mut(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     match req.player {
         Player::A => game.invoice_a = Some(req.invoice_string),
@@ -443,11 +458,19 @@ async fn get_invoice(
     Path((game_id, player)): Path<(GameId, String)>,
 ) -> Result<Json<InvoiceResponse>, AppError> {
     let games = state.games.read().unwrap();
-    let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     let invoice_string = match player.as_str() {
-        "A" | "a" => game.invoice_a.as_ref().ok_or(AppError::from("Invoice A not submitted"))?,
-        "B" | "b" => game.invoice_b.as_ref().ok_or(AppError::from("Invoice B not submitted"))?,
+        "A" | "a" => game
+            .invoice_a
+            .as_ref()
+            .ok_or(AppError::from("Invoice A not submitted"))?,
+        "B" | "b" => game
+            .invoice_b
+            .as_ref()
+            .ok_or(AppError::from("Invoice B not submitted"))?,
         _ => return Err(AppError::from("Invalid player")),
     };
 
@@ -462,7 +485,9 @@ async fn submit_encrypted_preimage(
     Json(req): Json<SubmitEncryptedPreimageRequest>,
 ) -> Result<Json<StatusResponse>, AppError> {
     let mut games = state.games.write().unwrap();
-    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get_mut(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     match req.player {
         Player::A => game.encrypted_preimage_a = Some(req.encrypted_preimage),
@@ -479,7 +504,9 @@ async fn get_encrypted_preimage(
     Path((game_id, player)): Path<(GameId, String)>,
 ) -> Result<Json<EncryptedPreimageResponse>, AppError> {
     let games = state.games.read().unwrap();
-    let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     let encrypted_preimage = match player.as_str() {
         "A" | "a" => game
@@ -502,7 +529,9 @@ async fn submit_commit(
     Json(req): Json<SubmitCommitRequest>,
 ) -> Result<Json<StatusResponse>, AppError> {
     let mut games = state.games.write().unwrap();
-    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get_mut(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     match req.player {
         Player::A => game.commit_a = Some(req.commitment),
@@ -520,7 +549,9 @@ async fn submit_reveal(
     Json(req): Json<SubmitRevealRequest>,
 ) -> Result<Json<StatusResponse>, AppError> {
     let mut games = state.games.write().unwrap();
-    let game = games.get_mut(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get_mut(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     // Verify commitment matches
     let expected_commit = match req.player {
@@ -529,8 +560,12 @@ async fn submit_reveal(
     };
 
     let stored_commit = match req.player {
-        Player::A => game.commit_a.ok_or(AppError::from("Commitment A not found"))?,
-        Player::B => game.commit_b.ok_or(AppError::from("Commitment B not found"))?,
+        Player::A => game
+            .commit_a
+            .ok_or(AppError::from("Commitment A not found"))?,
+        Player::B => game
+            .commit_b
+            .ok_or(AppError::from("Commitment B not found"))?,
     };
 
     if expected_commit != stored_commit {
@@ -598,7 +633,9 @@ async fn get_game_status(
     Path(game_id): Path<GameId>,
 ) -> Result<Json<GameStatusResponse>, AppError> {
     let games = state.games.read().unwrap();
-    let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     let status = match game.status {
         GameStatus::WaitingForOpponent => "waiting_for_opponent",
@@ -618,7 +655,9 @@ async fn get_result(
     Path(game_id): Path<GameId>,
 ) -> Result<Json<GameResultResponse>, AppError> {
     let games = state.games.read().unwrap();
-    let game = games.get(&game_id).ok_or(AppError::from("Game not found"))?;
+    let game = games
+        .get(&game_id)
+        .ok_or(AppError::from("Game not found"))?;
 
     if game.status != GameStatus::Completed {
         return Ok(Json(GameResultResponse {
@@ -719,7 +758,9 @@ async fn main() {
 
     let app = create_router(state);
 
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
+        .await
+        .unwrap();
     info!("Oracle service listening on http://0.0.0.0:{}", port);
     info!("  All Fiber RPC calls are made by player frontends directly");
 
