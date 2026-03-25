@@ -631,12 +631,14 @@ async fn oracle_submit_reveal(
         return Err(AppError::from("Reveal does not match commitment"));
     }
 
-    // Only accept reveals when game is in progress
-    if game.status != OracleGameStatus::InProgress {
-        return Err(AppError::from("Game is not in progress"));
+    // If game is already timed out, return timed_out status
+    if game.status == OracleGameStatus::TimedOut {
+        return Ok(Json(StatusResponse {
+            status: "timed_out".to_string(),
+        }));
     }
 
-    // Check if game has already timed out (before storing the reveal)
+    // Check if deadline has passed (before storing the reveal)
     if let Some(deadline) = game.reveal_deadline {
         if Instant::now() > deadline {
             game.status = OracleGameStatus::TimedOut;
@@ -648,6 +650,11 @@ async fn oracle_submit_reveal(
                 status: "timed_out".to_string(),
             }));
         }
+    }
+
+    // Only accept reveals when game is in progress
+    if game.status != OracleGameStatus::InProgress {
+        return Err(AppError::from("Game is not in progress"));
     }
 
     // Store reveal
@@ -1610,11 +1617,26 @@ async fn player_get_game_status(
         let result_data: serde_json::Value =
             resp.json().await.map_err(|e| AppError(e.to_string()))?;
 
-        if result_data["status"].as_str() == Some("completed") {
+        let status = result_data["status"].as_str();
+
+        if status == Some("completed") || status == Some("timed_out") || status == Some("cancelled")
+        {
             let mut games = player.games.write().unwrap();
             let game = games
                 .get_mut(&game_id)
                 .ok_or(AppError::from("Game not found"))?;
+
+            // For timed_out/cancelled, treat as Draw so player can proceed to cancel invoice
+            if status == Some("timed_out") || status == Some("cancelled") {
+                game.result = Some(GameResult::Draw);
+            } else if let Some(result_str) = result_data["result"].as_str() {
+                game.result = match result_str {
+                    "AWins" => Some(GameResult::AWins),
+                    "BWins" => Some(GameResult::BWins),
+                    "Draw" => Some(GameResult::Draw),
+                    _ => None,
+                };
+            }
 
             if let Some(result_str) = result_data["result"].as_str() {
                 game.result = match result_str {

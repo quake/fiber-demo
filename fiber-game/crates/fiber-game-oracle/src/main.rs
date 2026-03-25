@@ -582,12 +582,14 @@ async fn submit_reveal(
         return Err(AppError::from("Reveal does not match commitment"));
     }
 
-    // Only accept reveals when game is in progress
-    if game.status != GameStatus::InProgress {
-        return Err(AppError::from("Game is not in progress"));
+    // If game is already timed out, return timed_out status
+    if game.status == GameStatus::TimedOut {
+        return Ok(Json(StatusResponse {
+            status: "timed_out".to_string(),
+        }));
     }
 
-    // Check if game has already timed out (before storing the reveal)
+    // Check if deadline has passed (before storing the reveal)
     if let Some(deadline) = game.reveal_deadline {
         if Instant::now() > deadline {
             game.status = GameStatus::TimedOut;
@@ -596,6 +598,11 @@ async fn submit_reveal(
                 status: "timed_out".to_string(),
             }));
         }
+    }
+
+    // Only accept reveals when game is in progress
+    if game.status != GameStatus::InProgress {
+        return Err(AppError::from("Game is not in progress"));
     }
 
     // Store reveal
