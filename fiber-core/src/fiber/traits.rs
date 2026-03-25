@@ -110,8 +110,10 @@ pub trait FiberClient: Send + Sync {
     async fn cancel_invoice(&self, payment_hash: &PaymentHash) -> Result<(), FiberError>;
 
     /// Check payment status
-    async fn get_payment_status(&self, payment_hash: &PaymentHash)
-        -> Result<PaymentStatus, FiberError>;
+    async fn get_payment_status(
+        &self,
+        payment_hash: &PaymentHash,
+    ) -> Result<PaymentStatus, FiberError>;
 
     /// Get the total local balance in shannons across all open channels
     async fn get_balance(&self) -> Result<u64, FiberError>;

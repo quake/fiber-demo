@@ -78,7 +78,7 @@ impl RpcFiberClient {
     async fn call(&self, method: &str, params: Value) -> Result<Value, FiberError> {
         // Wrap params in array as required by Fiber RPC
         let params_array = json!([params]);
-        
+
         let request = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -87,7 +87,11 @@ impl RpcFiberClient {
         });
 
         // Debug: log the request
-        println!("[RpcFiberClient] {} -> {}", method, serde_json::to_string(&request).unwrap_or_default());
+        println!(
+            "[RpcFiberClient] {} -> {}",
+            method,
+            serde_json::to_string(&request).unwrap_or_default()
+        );
 
         let response = self
             .client
@@ -103,7 +107,11 @@ impl RpcFiberClient {
             .map_err(|e| FiberError::NetworkError(e.to_string()))?;
 
         // Debug: log the response
-        println!("[RpcFiberClient] {} <- {}", method, serde_json::to_string(&result).unwrap_or_default());
+        println!(
+            "[RpcFiberClient] {} <- {}",
+            method,
+            serde_json::to_string(&result).unwrap_or_default()
+        );
 
         if let Some(error) = result.get("error") {
             let msg = error
@@ -176,7 +184,7 @@ impl FiberClient for RpcFiberClient {
         });
 
         let result = self.call("send_payment", params).await;
-        
+
         // Handle "already exists" as success - payment is already in progress
         if let Err(FiberError::NetworkError(ref msg)) = result {
             if msg.contains("already exists") || msg.contains("Payment session already exists") {
@@ -184,7 +192,7 @@ impl FiberClient for RpcFiberClient {
                 return Ok(PaymentId::new());
             }
         }
-        
+
         let result = result?;
 
         // Check payment status
@@ -202,10 +210,13 @@ impl FiberClient for RpcFiberClient {
                     .and_then(|v| v.as_str())
                     .or_else(|| result.get("message").and_then(|v| v.as_str()))
                     .unwrap_or("Payment failed");
-                
+
                 // Include full response for debugging
                 let full_response = serde_json::to_string(&result).unwrap_or_default();
-                Err(FiberError::PaymentFailed(format!("{} (status: {}, response: {})", error, status, full_response)))
+                Err(FiberError::PaymentFailed(format!(
+                    "{} (status: {}, response: {})",
+                    error, status, full_response
+                )))
             }
         }
     }
@@ -282,7 +293,7 @@ impl FiberClient for RpcFiberClient {
     async fn get_balance(&self) -> Result<u64, FiberError> {
         // list_channels returns a list of channels
         let result = self.call("list_channels", json!({})).await?;
-        
+
         let channels = result
             .get("channels")
             .and_then(|v| v.as_array())
@@ -294,7 +305,7 @@ impl FiberClient for RpcFiberClient {
                 .get("local_balance")
                 .and_then(|v| v.as_str())
                 .unwrap_or("0x0");
-            
+
             // Parse hex string (0x...)
             let shannons = if local_balance_str.starts_with("0x") {
                 u64::from_str_radix(&local_balance_str[2..], 16).unwrap_or(0)
@@ -314,14 +325,8 @@ mod tests {
 
     #[test]
     fn test_currency_serialization() {
-        assert_eq!(
-            serde_json::to_string(&Currency::Fibt).unwrap(),
-            "\"Fibt\""
-        );
-        assert_eq!(
-            serde_json::to_string(&Currency::Fibb).unwrap(),
-            "\"Fibb\""
-        );
+        assert_eq!(serde_json::to_string(&Currency::Fibt).unwrap(), "\"Fibt\"");
+        assert_eq!(serde_json::to_string(&Currency::Fibb).unwrap(), "\"Fibb\"");
     }
 
     #[test]
@@ -331,7 +336,7 @@ mod tests {
 
         let status: CkbInvoiceStatus = serde_json::from_str("\"Received\"").unwrap();
         assert_eq!(status, CkbInvoiceStatus::Received);
-        
+
         let status: CkbInvoiceStatus = serde_json::from_str("\"Paid\"").unwrap();
         assert_eq!(status, CkbInvoiceStatus::Paid);
     }

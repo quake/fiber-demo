@@ -1,8 +1,8 @@
 //! Mock Fiber client for testing.
 
 use super::traits::{FiberClient, FiberError, HoldInvoice, PaymentId, PaymentStatus};
-use async_trait::async_trait;
 use crate::crypto::{PaymentHash, Preimage};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -54,7 +54,10 @@ impl MockFiberClient {
     /// This is called internally when we create an invoice
     pub fn register_preimage(&self, preimage: Preimage) {
         let payment_hash = preimage.payment_hash();
-        self.preimages.lock().unwrap().insert(payment_hash, preimage);
+        self.preimages
+            .lock()
+            .unwrap()
+            .insert(payment_hash, preimage);
     }
 
     /// Get all invoices (for testing)
@@ -289,7 +292,10 @@ mod tests {
         assert_eq!(client.balance(), 9000);
 
         // Settle with correct preimage
-        client.settle_invoice(&payment_hash, &preimage).await.unwrap();
+        client
+            .settle_invoice(&payment_hash, &preimage)
+            .await
+            .unwrap();
 
         // Balance should be restored (as receiver)
         assert_eq!(client.balance(), 10000);
@@ -372,7 +378,10 @@ mod tests {
             .unwrap();
 
         client.pay_hold_invoice(&invoice).await.unwrap();
-        client.settle_invoice(&payment_hash, &preimage).await.unwrap();
+        client
+            .settle_invoice(&payment_hash, &preimage)
+            .await
+            .unwrap();
 
         // Try to settle again
         let result = client.settle_invoice(&payment_hash, &preimage).await;
