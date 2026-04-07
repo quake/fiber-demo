@@ -104,6 +104,7 @@ struct OracleGameState {
     result: Option<GameResult>,
     signature: Option<[u8; 64]>,
     created_at: Instant,
+    reveal_deadline: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -119,6 +120,33 @@ enum OracleGameStatus {
     InProgress,
     Completed,
     Cancelled,
+    TimedOut,
+}
+
+const REVEAL_TIMEOUT_SECS: u64 = 120;
+
+async fn cleanup_timed_out_games(state: Arc<OracleState>) {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        let state_clone = state.clone();
+        if let Err(err) = tokio::task::spawn_blocking(move || {
+            let mut games = state_clone.games.write().unwrap();
+            for (game_id, game) in games.iter_mut() {
+                if game.status == OracleGameStatus::InProgress {
+                    if let Some(deadline) = game.reveal_deadline {
+                        if Instant::now() > deadline {
+                            game.status = OracleGameStatus::TimedOut;
+                            info!("Game {:?} timed out (background cleanup)", game_id);
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        {
+            tracing::warn!("cleanup_timed_out_games task failed: {:?}", err);
+        }
+    }
 }
 
 impl OracleState {
@@ -356,6 +384,7 @@ async fn oracle_create_game(
         result: None,
         signature: None,
         created_at: Instant::now(),
+        reveal_deadline: None,
     };
 
     state
@@ -602,6 +631,32 @@ async fn oracle_submit_reveal(
         return Err(AppError::from("Reveal does not match commitment"));
     }
 
+    // If game is already timed out, return timed_out status
+    if game.status == OracleGameStatus::TimedOut {
+        return Ok(Json(StatusResponse {
+            status: "timed_out".to_string(),
+        }));
+    }
+
+    // Check if deadline has passed (before storing the reveal)
+    if let Some(deadline) = game.reveal_deadline {
+        if Instant::now() > deadline {
+            game.status = OracleGameStatus::TimedOut;
+            info!(
+                "Oracle: Game {:?} timed out waiting for opponent reveal",
+                game_id
+            );
+            return Ok(Json(StatusResponse {
+                status: "timed_out".to_string(),
+            }));
+        }
+    }
+
+    // Only accept reveals when game is in progress
+    if game.status != OracleGameStatus::InProgress {
+        return Err(AppError::from("Game is not in progress"));
+    }
+
     // Store reveal
     let reveal = RevealData {
         action: req.action,
@@ -611,6 +666,12 @@ async fn oracle_submit_reveal(
     match req.player {
         Player::A => game.reveal_a = Some(reveal),
         Player::B => game.reveal_b = Some(reveal),
+    }
+
+    // Set reveal deadline if this is the first reveal
+    if game.reveal_deadline.is_none() {
+        game.reveal_deadline =
+            Some(Instant::now() + std::time::Duration::from_secs(REVEAL_TIMEOUT_SECS));
     }
 
     // Check if both reveals are in, then judge
@@ -669,6 +730,7 @@ async fn oracle_get_game_status(
         OracleGameStatus::InProgress => "in_progress",
         OracleGameStatus::Completed => "completed",
         OracleGameStatus::Cancelled => "cancelled",
+        OracleGameStatus::TimedOut => "timed_out",
     };
 
     Ok(Json(OracleGameStatusResponse {
@@ -687,8 +749,13 @@ async fn oracle_get_result(
         .ok_or(AppError::from("Game not found"))?;
 
     if game.status != OracleGameStatus::Completed {
+        let status = match game.status {
+            OracleGameStatus::TimedOut => "timed_out",
+            OracleGameStatus::Cancelled => "cancelled",
+            _ => "pending",
+        };
         return Ok(Json(OracleGameResultResponse {
-            status: "pending".to_string(),
+            status: status.to_string(),
             result: None,
             signature: None,
             game_data: None,
@@ -783,6 +850,8 @@ struct PlayerGameState {
     paid_opponent: bool,
     /// Oracle's secret number for Guess Number games (revealed with result)
     oracle_secret_number: Option<u8>,
+    /// Whether the game ended due to timeout (not a real draw)
+    timed_out: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -846,6 +915,7 @@ struct MyGameResponse {
     phase: PlayerGamePhase,
     amount_shannons: u64,
     result: Option<GameResult>,
+    timed_out: bool,
 }
 
 #[derive(Serialize)]
@@ -901,6 +971,8 @@ struct PlayerGameStatusResponse {
     /// Oracle's secret number for Guess Number games
     #[serde(skip_serializing_if = "Option::is_none")]
     oracle_secret_number: Option<u8>,
+    /// Whether the game ended due to timeout
+    timed_out: bool,
 }
 
 #[derive(Serialize)]
@@ -1052,6 +1124,7 @@ async fn player_get_my_games(State(player): State<Arc<PlayerState>>) -> Json<MyG
             phase: g.phase,
             amount_shannons: g.amount_shannons,
             result: g.result,
+            timed_out: g.timed_out,
         })
         .collect();
 
@@ -1140,6 +1213,7 @@ async fn player_create_game(
         opponent_invoice_string: None,
         paid_opponent: false,
         oracle_secret_number: None,
+        timed_out: false,
     };
 
     player.games.write().unwrap().insert(game_id, game_state);
@@ -1322,6 +1396,7 @@ async fn player_join_game(
         opponent_invoice_string: None,
         paid_opponent: false,
         oracle_secret_number: None,
+        timed_out: false,
     };
 
     player
@@ -1522,6 +1597,20 @@ async fn player_get_game_status(
                             game.phase = PlayerGamePhase::WaitingForAction;
                         }
                     }
+                } else if status_data["status"].as_str() == Some("timed_out")
+                    || status_data["status"].as_str() == Some("cancelled")
+                {
+                    // Oracle game timed out or was cancelled
+                    let mut games = player.games.write().unwrap();
+                    if let Some(game) = games.get_mut(&game_id) {
+                        game.result = Some(GameResult::Draw);
+                        game.timed_out = true;
+                        // Keep phase as is - player can cancel invoice
+                    }
+                    info!(
+                        "{}: Game {:?} timed out at Oracle, treating as Draw",
+                        player.player_name, game_id
+                    );
                 }
             }
         }
@@ -1550,11 +1639,27 @@ async fn player_get_game_status(
         let result_data: serde_json::Value =
             resp.json().await.map_err(|e| AppError(e.to_string()))?;
 
-        if result_data["status"].as_str() == Some("completed") {
+        let status = result_data["status"].as_str();
+
+        if status == Some("completed") || status == Some("timed_out") || status == Some("cancelled")
+        {
             let mut games = player.games.write().unwrap();
             let game = games
                 .get_mut(&game_id)
                 .ok_or(AppError::from("Game not found"))?;
+
+            // For timed_out/cancelled, treat as Draw so player can proceed to cancel invoice
+            if status == Some("timed_out") || status == Some("cancelled") {
+                game.result = Some(GameResult::Draw);
+                game.timed_out = true;
+            } else if let Some(result_str) = result_data["result"].as_str() {
+                game.result = match result_str {
+                    "AWins" => Some(GameResult::AWins),
+                    "BWins" => Some(GameResult::BWins),
+                    "Draw" => Some(GameResult::Draw),
+                    _ => None,
+                };
+            }
 
             if let Some(result_str) = result_data["result"].as_str() {
                 game.result = match result_str {
@@ -1650,6 +1755,7 @@ async fn player_get_game_status(
         opponent_preimage: opponent_preimage_hex,
         my_payment_hash: my_payment_hash_hex,
         oracle_secret_number: game.oracle_secret_number,
+        timed_out: game.timed_out,
     }))
 }
 
@@ -1765,7 +1871,7 @@ async fn player_payment_done(
 // ============================================================================
 
 struct AppState {
-    oracle: OracleState,
+    oracle: Arc<OracleState>,
     player_a: Arc<PlayerState>,
     player_b: Arc<PlayerState>,
 }
@@ -1910,7 +2016,7 @@ async fn main() {
     }
 
     let state = Arc::new(AppState {
-        oracle: OracleState::new(),
+        oracle: Arc::new(OracleState::new()),
         player_a: Arc::new(PlayerState::new(
             player_a_id,
             "Player A".to_string(),
@@ -1923,6 +2029,11 @@ async fn main() {
             oracle_url,
             fiber_rpc_url_b,
         )),
+    });
+
+    let oracle_state = state.oracle.clone();
+    tokio::spawn(async move {
+        cleanup_timed_out_games(oracle_state).await;
     });
 
     info!(

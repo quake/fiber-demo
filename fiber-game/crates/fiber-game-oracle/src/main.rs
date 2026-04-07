@@ -88,6 +88,7 @@ struct GameState {
     result: Option<GameResult>,
     signature: Option<[u8; 64]>,
     created_at: Instant,
+    reveal_deadline: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -103,7 +104,10 @@ enum GameStatus {
     InProgress,
     Completed,
     Cancelled,
+    TimedOut,
 }
+
+const REVEAL_TIMEOUT_SECS: u64 = 120;
 
 // === Request/Response types ===
 
@@ -337,6 +341,7 @@ async fn create_game(
         result: None,
         signature: None,
         created_at: Instant::now(),
+        reveal_deadline: None,
     };
 
     state.games.write().unwrap().insert(game_id, game_state);
@@ -577,6 +582,29 @@ async fn submit_reveal(
         return Err(AppError::from("Reveal does not match commitment"));
     }
 
+    // If game is already timed out, return timed_out status
+    if game.status == GameStatus::TimedOut {
+        return Ok(Json(StatusResponse {
+            status: "timed_out".to_string(),
+        }));
+    }
+
+    // Check if deadline has passed (before storing the reveal)
+    if let Some(deadline) = game.reveal_deadline {
+        if Instant::now() > deadline {
+            game.status = GameStatus::TimedOut;
+            info!("Game {:?} timed out waiting for opponent reveal", game_id);
+            return Ok(Json(StatusResponse {
+                status: "timed_out".to_string(),
+            }));
+        }
+    }
+
+    // Only accept reveals when game is in progress
+    if game.status != GameStatus::InProgress {
+        return Err(AppError::from("Game is not in progress"));
+    }
+
     // Store reveal
     let reveal = RevealData {
         action: req.action,
@@ -586,6 +614,12 @@ async fn submit_reveal(
     match req.player {
         Player::A => game.reveal_a = Some(reveal),
         Player::B => game.reveal_b = Some(reveal),
+    }
+
+    // Set reveal deadline if this is the first reveal
+    if game.reveal_deadline.is_none() {
+        game.reveal_deadline =
+            Some(Instant::now() + std::time::Duration::from_secs(REVEAL_TIMEOUT_SECS));
     }
 
     // Check if both reveals are in, then judge
@@ -642,6 +676,7 @@ async fn get_game_status(
         GameStatus::InProgress => "in_progress",
         GameStatus::Completed => "completed",
         GameStatus::Cancelled => "cancelled",
+        GameStatus::TimedOut => "timed_out",
     };
 
     Ok(Json(GameStatusResponse {
@@ -660,8 +695,13 @@ async fn get_result(
         .ok_or(AppError::from("Game not found"))?;
 
     if game.status != GameStatus::Completed {
+        let status = match game.status {
+            GameStatus::TimedOut => "timed_out",
+            GameStatus::Cancelled => "cancelled",
+            _ => "pending",
+        };
         return Ok(Json(GameResultResponse {
-            status: "pending".to_string(),
+            status: status.to_string(),
             result: None,
             signature: None,
             game_data: None,
@@ -710,6 +750,30 @@ async fn get_result(
     }))
 }
 
+async fn cleanup_timed_out_games(state: Arc<OracleState>) {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        let state_clone = state.clone();
+        if let Err(err) = tokio::task::spawn_blocking(move || {
+            let mut games = state_clone.games.write().unwrap();
+            for (game_id, game) in games.iter_mut() {
+                if game.status == GameStatus::InProgress {
+                    if let Some(deadline) = game.reveal_deadline {
+                        if Instant::now() > deadline {
+                            game.status = GameStatus::TimedOut;
+                            info!("Game {:?} timed out (background cleanup)", game_id);
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        {
+            tracing::warn!("cleanup_timed_out_games task failed: {:?}", err);
+        }
+    }
+}
+
 fn create_router(state: Arc<OracleState>) -> Router {
     Router::new()
         .route("/oracle/pubkey", get(get_pubkey))
@@ -750,6 +814,11 @@ async fn main() {
         .unwrap_or(3000);
 
     let state = Arc::new(OracleState::new());
+
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        cleanup_timed_out_games(state_clone).await;
+    });
 
     info!(
         "Oracle public key: {}",

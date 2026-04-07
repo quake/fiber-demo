@@ -820,6 +820,19 @@ async fn get_game_status(
                             game.phase = PlayerGamePhase::WaitingForAction;
                         }
                     }
+                } else if status_data["status"].as_str() == Some("timed_out")
+                    || status_data["status"].as_str() == Some("cancelled")
+                {
+                    // Oracle game timed out or was cancelled
+                    let mut games = state.games.write().unwrap();
+                    if let Some(game) = games.get_mut(&game_id) {
+                        game.result = Some(GameResult::Draw);
+                        // Keep phase as is - player can cancel invoice
+                    }
+                    info!(
+                        "{}: Game {:?} timed out at Oracle, treating as Draw",
+                        state.player_name, game_id
+                    );
                 }
             }
         }
@@ -848,13 +861,19 @@ async fn get_game_status(
         let result_data: serde_json::Value =
             resp.json().await.map_err(|e| AppError(e.to_string()))?;
 
-        if result_data["status"].as_str() == Some("completed") {
+        let status = result_data["status"].as_str();
+
+        if status == Some("completed") || status == Some("timed_out") || status == Some("cancelled")
+        {
             let mut games = state.games.write().unwrap();
             let game = games
                 .get_mut(&game_id)
                 .ok_or(AppError::from("Game not found"))?;
 
-            if let Some(result_str) = result_data["result"].as_str() {
+            // For timed_out/cancelled, treat as Draw so player can proceed to cancel invoice
+            if status == Some("timed_out") || status == Some("cancelled") {
+                game.result = Some(GameResult::Draw);
+            } else if let Some(result_str) = result_data["result"].as_str() {
                 game.result = match result_str {
                     "AWins" => Some(GameResult::AWins),
                     "BWins" => Some(GameResult::BWins),
