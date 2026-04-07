@@ -850,6 +850,8 @@ struct PlayerGameState {
     paid_opponent: bool,
     /// Oracle's secret number for Guess Number games (revealed with result)
     oracle_secret_number: Option<u8>,
+    /// Whether the game ended due to timeout (not a real draw)
+    timed_out: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -913,6 +915,7 @@ struct MyGameResponse {
     phase: PlayerGamePhase,
     amount_shannons: u64,
     result: Option<GameResult>,
+    timed_out: bool,
 }
 
 #[derive(Serialize)]
@@ -968,6 +971,8 @@ struct PlayerGameStatusResponse {
     /// Oracle's secret number for Guess Number games
     #[serde(skip_serializing_if = "Option::is_none")]
     oracle_secret_number: Option<u8>,
+    /// Whether the game ended due to timeout
+    timed_out: bool,
 }
 
 #[derive(Serialize)]
@@ -1119,6 +1124,7 @@ async fn player_get_my_games(State(player): State<Arc<PlayerState>>) -> Json<MyG
             phase: g.phase,
             amount_shannons: g.amount_shannons,
             result: g.result,
+            timed_out: g.timed_out,
         })
         .collect();
 
@@ -1207,6 +1213,7 @@ async fn player_create_game(
         opponent_invoice_string: None,
         paid_opponent: false,
         oracle_secret_number: None,
+        timed_out: false,
     };
 
     player.games.write().unwrap().insert(game_id, game_state);
@@ -1389,6 +1396,7 @@ async fn player_join_game(
         opponent_invoice_string: None,
         paid_opponent: false,
         oracle_secret_number: None,
+        timed_out: false,
     };
 
     player
@@ -1596,6 +1604,7 @@ async fn player_get_game_status(
                     let mut games = player.games.write().unwrap();
                     if let Some(game) = games.get_mut(&game_id) {
                         game.result = Some(GameResult::Draw);
+                        game.timed_out = true;
                         // Keep phase as is - player can cancel invoice
                     }
                     info!(
@@ -1642,6 +1651,7 @@ async fn player_get_game_status(
             // For timed_out/cancelled, treat as Draw so player can proceed to cancel invoice
             if status == Some("timed_out") || status == Some("cancelled") {
                 game.result = Some(GameResult::Draw);
+                game.timed_out = true;
             } else if let Some(result_str) = result_data["result"].as_str() {
                 game.result = match result_str {
                     "AWins" => Some(GameResult::AWins),
@@ -1745,6 +1755,7 @@ async fn player_get_game_status(
         opponent_preimage: opponent_preimage_hex,
         my_payment_hash: my_payment_hash_hex,
         oracle_secret_number: game.oracle_secret_number,
+        timed_out: game.timed_out,
     }))
 }
 

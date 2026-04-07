@@ -145,6 +145,10 @@
             color: #ffd700;
             font-weight: bold;
         }
+        .result-timeout {
+            color: #ff6b35;
+            font-weight: bold;
+        }
         .create-form {
             display: flex;
             gap: 15px;
@@ -210,6 +214,9 @@
         }
         .result.draw {
             color: #ffaa00;
+        }
+        .result.timeout {
+            color: #ff6b35;
         }
         .loading-spinner {
             width: 30px;
@@ -519,8 +526,8 @@
                 }
 
                 container.innerHTML = data.games.map(g => {
-                    const statusText = g.result ? formatResult(g.result, g.role) : `Phase: ${formatPhase(g.phase)}`;
-                    const statusClass = g.result ? `result-${getResultClass(g.result, g.role)}` : '';
+                    const statusText = g.result ? (g.timed_out ? 'Timed Out' : formatResult(g.result, g.role)) : `Phase: ${formatPhase(g.phase)}`;
+                    const statusClass = g.result ? (g.timed_out ? 'result-timeout' : `result-${getResultClass(g.result, g.role)}`) : '';
                     return `
                     <div class="game-item">
                         <div class="game-info">
@@ -874,8 +881,9 @@
             if (status.result) {
                 const myAction = formatAction(status.my_action);
                 const oppAction = formatAction(status.opponent_action);
-                const resultText = getResultText(status.result, status.role);
-                const resultClass = getResultClass(status.result, status.role);
+                const isTimedOut = status.timed_out;
+                const resultText = isTimedOut ? 'Game Timed Out!' : getResultText(status.result, status.role);
+                const resultClass = isTimedOut ? 'timeout' : getResultClass(status.result, status.role);
                 const isWinner = isPlayerWinner(status.result, status.role);
                 const isLoser = isPlayerLoser(status.result, status.role);
                 
@@ -890,6 +898,7 @@
                 content.innerHTML = `
                     <div class="result ${resultClass}">
                         <h3>${resultText}</h3>
+                        ${isTimedOut ? '<p style="margin: 10px 0; color: #ccc;">Opponent did not respond in time. No funds were exchanged.</p>' : ''}
                         <p style="margin: 15px 0; color: #ccc;">
                             You: <strong>${myAction}</strong> vs Opponent: <strong>${oppAction}</strong>
                         </p>
